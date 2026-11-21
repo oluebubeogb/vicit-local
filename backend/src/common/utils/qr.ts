@@ -1,0 +1,169 @@
+import * as QRCode from 'qrcode';
+
+/**
+ * Single source of truth for every gate QR code (visitor page, email, hosted PNG).
+ *
+ * Scan-friendly settings:
+ *  - error correction "M" (15%) — survives screen glare, scratches and email recompression
+ *  - 4-module quiet zone (the QR spec minimum; iPhone / jsQR / ZXing struggle with less)
+ *  - pure black on opaque white (no transparency, so dark-mode mail clients cannot
+ *    render it as black-on-black)
+ *  - 512px raster so it stays sharp when scaled down on retina screens
+ */
+export const QR_RENDER_OPTIONS = {
+  errorCorrectionLevel: 'M' as const,
+  margin: 4,
+  width: 512,
+  color: { dark: '#000000ff', light: '#ffffffff' },
+};
+
+/**
+ * Compact payload. Kept JSON (same shape as before) so already-issued codes and any
+ * other integrations keep working:  {"v":"<visitorId>","p":"<PASSPHRASE>","t":"<token8>"}
+ */
+export function buildGateQrPayload(visitorId: string, passphrase: string, token: string, passToken?: string | null) {
+  const payload: Record<string, string> = { v: visitorId, p: passphrase, t: token.slice(0, 8) };
+  if (passToken) payload.g = passToken;
+  return JSON.stringify(payload);
+}
+
+export function buildContractorQrPayload(qrToken: string) {
+  return JSON.stringify({ c: qrToken });
+}
+
+export function renderQrDataUrl(payload: string): Promise<string> {
+  return QRCode.toDataURL(payload, { ...QR_RENDER_OPTIONS, type: 'image/png' });
+}
+
+export function renderQrPng(payload: string): Promise<Buffer> {
+  return QRCode.toBuffer(payload, { ...QR_RENDER_OPTIONS, type: 'png' });
+}
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+export type ParsedGateCode = {
+  /** Normalised passphrase candidate (upper-case, hyphen separated) */
+  passphrase?: string;
+  /** Invite token (from a /visitor/<token> URL or a bare UUID) */
+  token?: string;
+  /** Visitor id (from the QR JSON "v" field or a bare UUID) */
+  visitorId?: string;
+  /** First 8 chars of invite token from QR JSON "t" */
+  tokenPrefix?: string;
+  /** Permanent staff attendance QR token (JSON "s" or /staff/<token>) */
+  staffToken?: string;
+  /** Contractor attendance QR token (JSON "c" or /contractor/<token>) */
+  contractorToken?: string;
+  /** Shared same-day visitor pass (JSON "g") */
+  passToken?: string;
+};
+
+function normPassphrase(s: string): string {
+  return s
+    .trim()
+    .toUpperCase()
+    .replace(/[\s_.–—]+/g, '-') // spaces, underscores, en/em dashes → hyphen
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Accepts anything a gate officer could scan or type and extracts lookup keys:
+ *   - QR JSON  {"v":..,"p":..,"t":..}  (any key case, smart quotes, whitespace)
+ *   - Full / partial URL to /visitor/<token> (with or without trailing slash, query, hash)
+ *   - URL with ?code=<passphrase> (gate deep link)
+ *   - Bare invite token / visitor id UUID
+ *   - Passphrase in any case / with spaces instead of hyphens
+ */
+export function parseGateCode(rawInput: unknown): ParsedGateCode {
+  if (typeof rawInput !== 'string') return {};
+  // strip BOM / zero-width chars that some scanners and copy-paste add
+  let raw = rawInput.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+  if (!raw) return {};
+
+  // Normalise curly quotes (iOS "smart punctuation" when typing/pasting)
+  const quoteFixed = raw.replace(/[\u201C\u201D\u2033]/g, '"').replace(/[\u2018\u2019]/g, "'");
+
+  // 1) JSON payload
+  if (quoteFixed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(quoteFixed);
+      const lower: Record<string, any> = {};
+      for (const k of Object.keys(obj || {})) lower[k.toLowerCase()] = obj[k];
+      const out: ParsedGateCode = {};
+      if (typeof lower.p === 'string' && lower.p.trim()) out.passphrase = normPassphrase(lower.p);
+      if (typeof lower.v === 'string' && UUID_RE.test(lower.v)) out.visitorId = lower.v.toLowerCase();
+      if (typeof lower.t === 'string' && lower.t.trim()) out.tokenPrefix = lower.t.trim().toLowerCase();
+      if (typeof lower.s === 'string' && lower.s.trim().length >= 16) out.staffToken = lower.s.trim();
+      if (typeof lower.c === 'string' && lower.c.trim().length >= 16) out.contractorToken = lower.c.trim();
+      if (typeof lower.g === 'string' && lower.g.trim().length >= 16) out.passToken = lower.g.trim();
+      if (out.contractorToken) return out;
+      if (out.staffToken) return out;
+      if (out.passToken || out.passphrase || out.visitorId) return out;
+    } catch {
+      // fall through — maybe a mangled payload; try the other strategies
+    }
+    const pm = quoteFixed.match(/"p"\s*:\s*"([^"]+)"/i);
+    const vm = quoteFixed.match(/"v"\s*:\s*"([^"]+)"/i);
+    const sm = quoteFixed.match(/"s"\s*:\s*"([^"]+)"/i);
+    const cm = quoteFixed.match(/"c"\s*:\s*"([^"]+)"/i);
+    const gm = quoteFixed.match(/"g"\s*:\s*"([^"]+)"/i);
+    if (cm && cm[1].trim().length >= 16) return { contractorToken: cm[1].trim() };
+    if (sm && sm[1].trim().length >= 16) return { staffToken: sm[1].trim() };
+    if (gm && gm[1].trim().length >= 16) return { passToken: gm[1].trim() };
+    if (pm || vm) {
+      return {
+        passphrase: pm ? normPassphrase(pm[1]) : undefined,
+        visitorId: vm && UUID_RE.test(vm[1]) ? vm[1].toLowerCase() : undefined,
+      };
+    }
+  }
+
+  // 2) URL (absolute or relative) to the visitor page, staff badge, or gate deep link
+  if (/^(https?:\/\/|www\.|\/)/i.test(raw) || /\/visitor\//i.test(raw) || /\/staff\//i.test(raw) || /\/contractor/i.test(raw)) {
+    try {
+      const url = new URL(raw, 'http://placeholder.local');
+      const code = url.searchParams.get('code');
+      if (code) return parseGateCode(code);
+      const contractor = url.pathname.match(/\/contractors?\/([^/?#]+)/i);
+      if (contractor) {
+        const tok = decodeURIComponent(contractor[1]).trim();
+        if (tok.length >= 16) return { contractorToken: tok };
+      }
+      const staff = url.pathname.match(/\/staff\/([^/?#]+)/i);
+      if (staff) {
+        const tok = decodeURIComponent(staff[1]).trim();
+        if (tok.length >= 16) return { staffToken: tok };
+      }
+      const m = url.pathname.match(/\/visitor\/([^/?#]+)/i);
+      if (m) {
+        const tok = decodeURIComponent(m[1]).trim();
+        const uuid = tok.match(UUID_RE);
+        return { token: (uuid ? uuid[0] : tok).toLowerCase() };
+      }
+    } catch {
+      // not a URL
+    }
+    const anyUuid = raw.match(UUID_RE);
+    if (anyUuid) return { token: anyUuid[0].toLowerCase(), visitorId: anyUuid[0].toLowerCase() };
+  }
+
+  // 3) Bare UUID — could be invite token or visitor id
+  const bare = raw.match(new RegExp(`^${UUID_RE.source}$`, 'i'));
+  if (bare) {
+    const id = bare[0].toLowerCase();
+    return { token: id, visitorId: id };
+  }
+
+  // 4) Bare staff / contractor / shared-pass tokens
+  if (/^c_[A-Za-z0-9_-]{16,128}$/.test(raw)) return { contractorToken: raw };
+  if (/^p_[A-Za-z0-9_-]{16,128}$/.test(raw)) return { passToken: raw };
+  if (/^[A-Za-z0-9_-]{32,128}$/.test(raw) && !/[-]/.test(raw.replace(/-/g, ''))) {
+    // Prefer treating long opaque tokens as staff QR when they are not UUIDs
+    if (raw.length >= 32 && !UUID_RE.test(raw)) return { staffToken: raw };
+  }
+  if (/^[a-f0-9]{32,128}$/i.test(raw)) return { staffToken: raw };
+
+  // 5) Passphrase
+  return { passphrase: normPassphrase(raw) };
+}

@@ -1,0 +1,103 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vicit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vicit_secret_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-vicit_llog}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vicit} -d ${POSTGRES_DB:-vicit_llog}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://vicit:vicit_secret_change_me@db:5432/vicit_llog?schema=public}
+      JWT_SECRET: ${JWT_SECRET:-change-this-to-a-long-random-string-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      PHOTO_STORAGE_PATH: /data/photos
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      INVITE_LINK_TTL_MINUTES: ${INVITE_LINK_TTL_MINUTES:-60}
+      PORT: "4000"
+      PHOTO_RETENTION_DAYS: ${PHOTO_RETENTION_DAYS:-90}
+      ENABLE_PUSH: ${ENABLE_PUSH:-true}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@vicit.local}
+      SMS_PROVIDER: ${SMS_PROVIDER:-}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-}
+      ADMIN_PHONE: ${ADMIN_PHONE:-}
+      ORGANIZATION: ${ORGANIZATION:-}
+      ORGANIZATION_CODE: ${ORGANIZATION_CODE:-}
+      STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
+      SINGLE_AGENCY_CODE: ${SINGLE_AGENCY_CODE:-}
+      EXTERNAL_HOST_SMS: ${EXTERNAL_HOST_SMS:-false}
+      HOST_DIGEST_SECONDS: ${HOST_DIGEST_SECONDS:-60}
+      OVERSTAY_ALERTS: ${OVERSTAY_ALERTS:-true}
+      OVERSTAY_GRACE_MINUTES: ${OVERSTAY_GRACE_MINUTES:-}
+      OVERSTAY_INTERVAL_SECONDS: ${OVERSTAY_INTERVAL_SECONDS:-}
+      SHOW_TEMP_PASSWORDS_IN_ADMIN: ${SHOW_TEMP_PASSWORDS_IN_ADMIN:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_RETRIES: ${SMTP_RETRIES:-3}
+      SMTP_RATE_PER_SECOND: ${SMTP_RATE_PER_SECOND:-3}
+      REMINDERS_ENABLED: ${REMINDERS_ENABLED:-true}
+      REMINDER_INTERVAL_SECONDS: ${REMINDER_INTERVAL_SECONDS:-60}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Lagos}
+      TURN_URL: ${TURN_URL:-}
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+    volumes:
+      - photos_data:/data/photos
+      - reports_data:/data/reports
+    expose:
+      - "4000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vicit Llog}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Runtime fallbacks (NEXT_PUBLIC_* are mainly build-time)
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Vicit Llog}
+      # Server-side URL the Next server uses to read branding for the dynamic PWA manifest
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://backend:4000}
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    expose:
+      - "3000"
+
+volumes:
+  postgres_data:
+  photos_data:
+  reports_data:

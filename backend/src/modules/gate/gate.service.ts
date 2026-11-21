@@ -1,0 +1,1242 @@
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { PrismaService } from '../../common/prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../mail/mail.service';
+import { EntryMode, VisitStatus } from '@prisma/client';
+import { EntryDto } from './dto/entry.dto';
+import { parseGateCode } from '../../common/utils/qr';
+import { linkSameDayVisits, visitorsForPassToken } from '../../common/utils/visitor-pass';
+import { currentAttendanceDay, localDayKey, attendanceTimeZone, startOfNextLocalDay } from '../../common/utils/attendance-day';
+import { roleLabel } from '../../common/utils/role-labels';
+import { ContractorsService } from '../contractors/contractors.service';
+import { GatePassService } from './gate-pass.service';
+import { allowedEntryModes, cleanPlate, cleanVehicleDetails, vehicleMode } from '../../common/utils/entry-modes';
+import { v4 as uuidv4 } from 'uuid';
+import { HostNotifierService } from '../notifications/host-notifier.service';
+import { NotificationHub } from '../notifications/notification.hub';
+import * as fs from 'fs';
+import * as path from 'path';
+
+@Injectable()
+export class GateService {
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+    private notifications: NotificationsService,
+    private mail: MailService,
+    private contractors: ContractorsService,
+    private passes: GatePassService,
+    private hostEvents: HostNotifierService,
+    private liveHub: NotificationHub,
+  ) {}
+
+  async lookup(passphraseOrQr: string, actor?: any, atGateId?: string) {
+    const parsed = parseGateCode(passphraseOrQr);
+    if (parsed.contractorToken) {
+      const found = await this.contractors.lookup(parsed.contractorToken, actor);
+      if (!found) throw new NotFoundException('No matching contractor found');
+      return found;
+    }
+    if (parsed.staffToken) {
+      return this.scanStaffAttendance(parsed.staffToken, actor);
+    }
+    if (!parsed.passphrase && !parsed.token && !parsed.visitorId && !parsed.passToken) {
+      throw new BadRequestException('Scan a QR code or enter a passphrase');
+    }
+
+    const include = {
+      visitors: { include: { gateVisits: { include: { gate: { select: { name: true, sequence: true, locationId: true } }, officer: { select: { fullName: true } }, particulars: true }, orderBy: { occurredAt: 'asc' } }, transfers: { orderBy: { createdAt: 'asc' } } } },
+      host: { select: { id: true, fullName: true, email: true, phone: true, portfolio: true } },
+      organisation: { select: { id: true, name: true, code: true } },
+    } as const;
+
+    let invite: any = null;
+    let scannedVisitorId: string | null = null;
+    let seedVisitorId: string | null = null;
+
+    if (parsed.passToken) {
+      const pack = await visitorsForPassToken(this.prisma, parsed.passToken);
+      if (pack.visitors.length) {
+        seedVisitorId = pack.visitors[0].id;
+        invite = await this.prisma.invite.findUnique({ where: { id: pack.visitors[0].inviteId }, include });
+      }
+    }
+
+    if (parsed.passphrase) {
+      invite = invite || await this.prisma.invite.findFirst({
+        where: { passphrase: parsed.passphrase },
+        include,
+      });
+      if (!invite && typeof passphraseOrQr === 'string') {
+        invite = await this.prisma.invite.findFirst({
+          where: { passphrase: passphraseOrQr.trim().toUpperCase() },
+          include,
+        });
+      }
+    }
+
+    if (!invite && parsed.token) {
+      invite = await this.prisma.invite.findUnique({ where: { token: parsed.token }, include });
+    }
+
+    if (parsed.visitorId) {
+      if (!invite) {
+        const v = await this.prisma.visitor.findUnique({
+          where: { id: parsed.visitorId },
+          select: { id: true, inviteId: true },
+        });
+        if (v) {
+          invite = await this.prisma.invite.findUnique({ where: { id: v.inviteId }, include });
+        }
+      }
+      if (invite?.visitors?.some((v: any) => v.id === parsed.visitorId)) {
+        scannedVisitorId = parsed.visitorId;
+        seedVisitorId = parsed.visitorId;
+      }
+    }
+
+    let rfidScan = false;
+    if (!invite) {
+      // v32: an RFID card tapped on a USB reader types its UID — find the visit it is out on.
+      const rf = await this.passes.issuedByRfid(passphraseOrQr);
+      if (rf) {
+        const v = await this.prisma.visitor.findUnique({ where: { id: rf.visitorId }, select: { inviteId: true } });
+        if (v) {
+          invite = await this.prisma.invite.findUnique({ where: { id: v.inviteId }, include });
+          scannedVisitorId = rf.visitorId;
+          seedVisitorId = rf.visitorId;
+          rfidScan = true;
+        }
+      }
+    }
+    if (!invite) throw new NotFoundException('No matching invite found');
+    const globalAccess = actor && ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (actor?.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
+
+    const seed = seedVisitorId || scannedVisitorId || invite.visitors[0]?.id;
+    const linked = seed ? await linkSameDayVisits(this.prisma, seed) : { visitors: invite.visitors, visitorIds: invite.visitors.map((v: any) => v.id), passToken: null, day: null };
+    const appointments = this.groupAppointments(linked.visitors?.length ? linked.visitors : invite.visitors);
+    if (actor && !globalAccess && actor.role !== 'GLOBAL_ADMIN') {
+      const mine = appointments.find((a: any) => a.organisationId === actor.orgId) || (invite.organisationId === actor.orgId ? invite : null);
+      if (!mine) throw new NotFoundException('No matching invite found');
+      if (mine && mine.inviteId && mine.inviteId !== invite.id) {
+        const alt = await this.prisma.invite.findUnique({ where: { id: mine.inviteId }, include });
+        if (alt) invite = alt;
+      }
+    }
+
+    const presentVisitor = (v: any) => ({
+      id: v.id,
+      fullName: v.fullName,
+      email: v.email,
+      phone: v.phone,
+      photoPath: v.photoPath,
+      status: v.status,
+      // No email: the registration link (face capture + QR) never reached them, so the gate takes
+      // the photo and the host confirms it — even when a phone number was given.
+      noContact: !v.email,
+      gatePhotoPath: v.gatePhotoPath || null,
+      identityStatus: v.identityStatus || null,
+      identityRequestedAt: v.identityRequestedAt || null,
+      identityReviewedAt: v.identityReviewedAt || null,
+      vehiclePlate: v.vehiclePlate || null,
+      vehicleDetails: v.vehicleDetails || null,
+      hostAvailabilityStatus: v.hostAvailabilityStatus,
+      hostWaitUntil: v.hostWaitUntil,
+      hostRespondedAt: v.hostRespondedAt,
+      lastHostPromptAt: v.lastHostPromptAt,
+      entryMode: v.entryMode,
+      enteredAt: v.enteredAt,
+      exitedAt: v.exitedAt,
+      deniedAt: v.deniedAt,
+      deniedReason: v.deniedReason,
+      passToken: v.passToken,
+      gateVisits: v.gateVisits || [],
+      transfers: v.transfers || [],
+      inviteId: v.inviteId,
+    });
+
+    const presentedVisitors = await this.withPassItems(this.lookupVisitors(invite, linked, !seedVisitorId && !scannedVisitorId).map(presentVisitor), invite, actor);
+    if (atGateId && actor) {
+      const targets = scannedVisitorId
+        ? presentedVisitors.filter((v: any) => v.id === scannedVisitorId)
+        : seedVisitorId
+          ? presentedVisitors.filter((v: any) => v.id === seedVisitorId || (linked.passToken && v.passToken === linked.passToken))
+          : presentedVisitors.length === 1 ? presentedVisitors : [];
+      for (const t of targets) this.announceAtGate(t.id, String(atGateId), actor).catch(() => null);
+    }
+    return {
+      kind: 'visitor',
+      inviteId: invite.id,
+      scannedVisitorId,
+      rfidScan,
+      // v32: paper request — the host has no account (alerts go to the admin who created it)
+      externalHost: invite.hostName ? { name: invite.hostName, phone: invite.hostPhone || null, office: invite.hostOffice || null } : null,
+      purpose: invite.purpose,
+      expectedMode: invite.expectedMode,
+      // v32: paper request — show the real host; calls/alerts still reach the admin account (host.id).
+      host: invite.hostName ? { ...invite.host, fullName: invite.hostName, phone: invite.hostPhone, portfolio: invite.hostOffice || null, external: true, viaAdmin: invite.host?.fullName || null } : invite.host,
+      organisation: invite.organisation,
+      organisationId: invite.organisationId,
+      locationId: invite.locationId,
+      inviteStatus: invite.status,
+      cancelled: !!invite.cancelledAt || invite.status === 'REVOKED',
+      cancelledAt: invite.cancelledAt || null,
+      cancelReason: invite.cancelReason || null,
+      expectedAt: invite.expectedAt || null,
+      vehiclePlate: invite.vehiclePlate || null,
+      vehicleDetails: invite.vehicleDetails || null,
+      allowedEntryModes: await allowedEntryModes(this.prisma),
+      // The route this visitor must follow. The gate page uses this even if its own checkpoint
+      // list failed to load (the v18 mobile bypass), so legacy entry/exit never shows when gates exist.
+      gates: await this.routeGates(invite, actor),
+      passToken: linked.passToken,
+      appointments,
+      visitors: presentedVisitors,
+      gatePassProtocol: await this.passes.protocol(),
+      // Gate 1 per guest (multi-site agencies follow each guest's own route); the top-level id is kept for older screens.
+      passGateId: presentedVisitors.find((v: any) => v.id === scannedVisitorId)?.passGateId ?? presentedVisitors[0]?.passGateId ?? (await this.passes.firstGateFor({ invite }, { actor }))?.id ?? null,
+    };
+  }
+
+  /** v32: ids of every entry point of this gate (same site + sequence), the gate itself first. */
+  private async pointIds(gate: { id: string; locationId: string; sequence: number }) {
+    const rows = await this.prisma.gate.findMany({ where: { locationId: gate.locationId, sequence: gate.sequence }, select: { id: true } });
+    return [gate.id, ...rows.map((r) => r.id).filter((id) => id !== gate.id)];
+  }
+
+  private async pointIdsById(gateId: string) {
+    const g = await this.prisma.gate.findUnique({ where: { id: gateId }, select: { id: true, locationId: true, sequence: true } });
+    return g ? this.pointIds(g) : [gateId];
+  }
+
+  /** v32: officer is assigned to this gate or another entry point of it. */
+  private async assignedAtPoints(gate: { id: string; locationId: string; sequence: number }, userId: string) {
+    return (await this.prisma.gateOfficerAssignment.count({ where: { userId, gate: { locationId: gate.locationId, sequence: gate.sequence } } })) > 0;
+  }
+
+  private bySequence<T extends { sequence: number }>(gates: T[]) {
+    const map = new Map<number, T[]>();
+    for (const g of gates) map.set(g.sequence, [...(map.get(g.sequence) || []), g]);
+    return Array.from(map.values());
+  }
+
+  private groupLabel(group: Array<{ name: string; groupName?: string | null }>) {
+    return group.find((g) => g.groupName)?.groupName || group.map((g) => g.name).join(' / ');
+  }
+
+  private async assertNotClearedAtPoints(visitorId: string, points: string[], direction: string) {
+    const last = await this.prisma.gateVisit.findFirst({ where: { visitorId, gateId: { in: points }, direction }, orderBy: { occurredAt: 'desc' }, include: { gate: { select: { id: true, name: true } } } });
+    if (last?.decision === 'PASSED') throw new BadRequestException(last.gateId === points[0] ? 'Visitor has already passed this checkpoint' : `Already cleared at ${last.gate.name}`);
+  }
+
+  /**
+   * v32: tell every open gate screen of this agency that a guest moved (entry points stay in sync live).
+   * Payload is only the ids; screens showing that guest refresh themselves.
+   */
+  private async syncPoints(gate: any, visitorId: string, actorId: string) {
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true, id: { not: actorId }, OR: [{ role: { in: ['GLOBAL_GATE', 'SUPER_ADMIN'] } }, { organisationId: gate.location.organisationId, role: { in: ['GATE', 'ADMIN'] } }] },
+      select: { id: true },
+    });
+    for (const u of users) if (this.liveHub.isOnline(u.id)) this.liveHub.publish(u.id, { type: 'gate-sync', visitorId, gateId: gate.id, sequence: gate.sequence, locationId: gate.locationId });
+  }
+
+  /**
+   * v32: officer marks a guest exited by hand (forgot to scan out). No auto-close.
+   * Any tag / pass / RFID card still out stays ISSUED and is flagged on the outstanding list.
+   */
+  async markExited(visitorId: string, actor: any, body: { note?: string; gateId?: string }) {
+    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers or admins can mark a guest exited');
+    const visitor = await this.assertGateCanHandle(visitorId, actor);
+    if (visitor.status !== VisitStatus.ARRIVED) throw new BadRequestException('Only guests inside can be marked exited');
+    const note = String(body?.note || '').trim();
+    if (note.length < 3) throw new BadRequestException('Add a short note (e.g. "left without scanning out")');
+    if (actor.role === 'GATE') {
+      const mine = await this.prisma.gate.count({ where: { isActive: true, location: { organisationId: visitor.invite.organisationId }, assignments: { some: { userId: actor.id } } } });
+      if (!mine) throw new ForbiddenException('You are not assigned to a gate of this agency');
+    }
+    const open = await this.prisma.gatePassItem.findMany({ where: { visitorId, status: 'ISSUED' }, include: { gate: { select: { name: true } } } });
+    const withheld = await this.prisma.gateParticular.count({ where: { kind: 'WITHHELD', returnedAt: null, resolvedAt: null, gateVisit: { visitorId } } });
+    const now = new Date();
+    await this.prisma.visitor.update({ where: { id: visitorId }, data: { status: VisitStatus.EXITED, exitedAt: now, exitById: actor.id, exitManual: true, exitNote: note.slice(0, 500) } });
+    const flags = [
+      ...open.map((i) => `${i.kind === 'PASS' ? 'pass' : i.kind === 'RFID' ? 'RFID card' : 'tag'}${i.tagNumber ? ` ${i.tagNumber}` : ''} not returned (${i.gate?.name || 'gate'})`),
+      ...(withheld ? [`${withheld} withheld item${withheld > 1 ? 's' : ''} not collected`] : []),
+    ];
+    await this.audit.log({ action: 'VISITOR_MARKED_EXITED', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { guest: visitor.fullName, note, openItems: open.map((i) => ({ id: i.id, kind: i.kind, tagNumber: i.tagNumber, rfidUid: i.rfidUid })), withheld } });
+    await this.hostEvents.visitorEvent(visitorId, {
+      type: 'VISITOR_EXITED',
+      title: 'Visitor marked exited',
+      body: `${visitor.fullName} was marked exited by the gate (no exit scan): ${note}${flags.length ? ` · ${flags.join(' · ')}` : ''}.`,
+      email: 'now',
+      emailTitle: 'Visitor marked exited',
+      meta: { manual: true, openItems: open.length },
+    });
+    return { id: visitorId, status: 'EXITED', exitManual: true, unreturned: flags };
+  }
+
+  private announced = new Map<string, number>();
+
+  /**
+   * v31: "<guest> is at <gate>" for the host (in-app only, once per guest/gate/direction) when a
+   * personal code is scanned at the officer's station and the guest is due there.
+   */
+  async announceAtGate(visitorId: string, gateId: string, actor: any) {
+    const gate = await this.prisma.gate.findFirst({ where: { id: gateId, isActive: true }, include: { location: true, assignments: true } });
+    if (!gate) return false;
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
+    if (!visitor || visitor.invite.organisationId !== gate.location.organisationId) return false;
+    if (visitor.invite.locationId && visitor.invite.locationId !== gate.locationId) return false;
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && gate.location.organisationId !== actor.orgId) return false;
+    if (actor.role === 'GATE' && !gate.assignments.some((a: any) => a.userId === actor.id)) return false;
+    let direction: 'ENTRY' | 'EXIT';
+    if (visitor.status === VisitStatus.INVITED && visitor.photoPath) direction = 'ENTRY';
+    else if (visitor.status === VisitStatus.ARRIVED) direction = 'EXIT';
+    else return false;
+    const events = await this.prisma.gateVisit.findMany({ where: { visitorId, direction, decision: 'PASSED', gate: { locationId: gate.locationId } }, select: { gate: { select: { sequence: true } } } });
+    const passed = new Set(events.map((e) => e.gate.sequence));
+    if (passed.has(gate.sequence)) return false;
+    const before = await this.prisma.gate.findMany({ where: { locationId: gate.locationId, isActive: true, sequence: direction === 'ENTRY' ? { lt: gate.sequence } : { gt: gate.sequence } }, select: { sequence: true } });
+    if (before.some((g) => !passed.has(g.sequence))) return false;
+    const key = `${visitorId}:${gate.id}:${direction}`;
+    const now = Date.now();
+    for (const [k, t] of Array.from(this.announced.entries())) if (now - t > 12 * 3600000) this.announced.delete(k);
+    if (this.announced.has(key)) return false;
+    this.announced.set(key, now);
+    const dup = await this.prisma.notification.findFirst({ where: { userId: visitor.invite.hostId, AND: [{ meta: { path: ['type'], equals: 'VISITOR_AT_GATE' } }, { meta: { path: ['visitorId'], equals: visitorId } }, { meta: { path: ['gateId'], equals: gate.id } }, { meta: { path: ['direction'], equals: direction } }] }, select: { id: true } });
+    if (dup) return false;
+    await this.hostEvents.visitorEvent(visitorId, {
+      type: 'VISITOR_AT_GATE',
+      title: direction === 'ENTRY' ? `${visitor.fullName} is at ${gate.name}` : `${visitor.fullName} is leaving via ${gate.name}`,
+      body: direction === 'ENTRY' ? `${visitor.fullName} has reached ${gate.name} and is being checked.` : `${visitor.fullName} is at ${gate.name} on the way out.`,
+      meta: { gateId: gate.id, direction },
+      email: 'none',
+    });
+    return true;
+  }
+
+  /** v22: every tag / printed pass issued to these guests (open and closed), for the guest card + history. */
+  private async withPassItems(list: any[], invite?: { organisationId: string; locationId?: string | null }, actor?: any) {
+    const map = await this.passes.itemsForVisitors(list.map((v) => v.id));
+    return Promise.all(list.map(async (v) => {
+      const passItems = map.get(v.id) || [];
+      const passGateId = invite ? (await this.passes.firstGateFor({ id: v.id, invite }, { actor }))?.id || null : undefined;
+      return { ...v, passItems, openPassItems: passItems.filter((i: any) => i.status === 'ISSUED').length, ...(invite ? { passGateId } : {}) };
+    }));
+  }
+
+  /** Which of these visitor ids the actor may see (org scope, global roles see all). */
+  async visibleVisitorIds(actor: any, ids: string[]) {
+    if (!ids.length) return [];
+    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) return [];
+    const global = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const rows = await this.prisma.visitor.findMany({ where: { id: { in: ids }, ...(global ? {} : { invite: { organisationId: actor.orgId } }) }, select: { id: true } });
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Which guests the gate sees. An invite-level code (passphrase / invite link) shows every guest on
+   * the invite. A personal code shows that person's same-day visits on this invite, plus any guest on
+   * the invite with no email (they never got a personal code, so the gate reaches them
+   * through a companion's or the host's code).
+   */
+  private lookupVisitors(invite: any, linked: any, inviteLevel: boolean) {
+    const all: any[] = invite.visitors || [];
+    if (inviteLevel || !linked.visitors?.length) return all;
+    const mine = linked.visitors.filter((v: any) => v.inviteId === invite.id);
+    const ids = new Set(mine.map((v: any) => v.id));
+    const extra = all.filter((v: any) => !ids.has(v.id) && !v.email);
+    return [...mine, ...extra];
+  }
+
+  private groupAppointments(visitors: any[]) {
+    const byInvite = new Map<string, any>();
+    for (const v of visitors || []) {
+      const inv = v.invite || {};
+      const id = v.inviteId || inv.id;
+      if (!id) continue;
+      if (!byInvite.has(id)) {
+        byInvite.set(id, {
+          inviteId: id,
+          purpose: inv.purpose,
+          expectedAt: inv.expectedAt,
+          organisation: inv.organisation,
+          organisationId: inv.organisationId,
+          locationId: inv.locationId,
+          host: inv.host,
+          visitors: [],
+        });
+      }
+      byInvite.get(id).visitors.push({
+        id: v.id,
+        fullName: v.fullName,
+        email: v.email,
+        phone: v.phone,
+        photoPath: v.photoPath,
+        status: v.status,
+        enteredAt: v.enteredAt,
+        exitedAt: v.exitedAt,
+        deniedAt: v.deniedAt,
+        deniedReason: v.deniedReason,
+        hostAvailabilityStatus: v.hostAvailabilityStatus,
+        gateVisits: v.gateVisits || [],
+        transfers: v.transfers || [],
+      });
+    }
+    return [...byInvite.values()];
+  }
+
+  /** Active checkpoints on this invite's route: its location, or every location of its agency. */
+  async routeGates(invite: { organisationId: string; locationId?: string | null }, actor?: any) {
+    const where: any = { isActive: true };
+    if (invite.locationId) where.locationId = invite.locationId;
+    else where.location = { organisationId: invite.organisationId };
+    const gates = await this.prisma.gate.findMany({
+      where,
+      include: { location: { select: { id: true, name: true, organisationId: true, organisation: { select: { name: true } } } }, assignments: { select: { userId: true } } },
+      orderBy: [{ locationId: 'asc' }, { sequence: 'asc' }],
+    });
+    return gates.map(({ assignments, ...g }: any) => ({
+      ...g,
+      // Only agency gate officers are limited to their assigned checkpoints. Super Gate Officers
+      // (GLOBAL_GATE) are on every checkpoint of every agency, like the Super Admin.
+      assigned: !actor || actor.role !== 'GATE' || assignments.some((a: any) => a.userId === actor.id),
+    }));
+  }
+
+  private photoDir() {
+    return process.env.PHOTO_STORAGE_PATH || '/data/photos';
+  }
+
+  private async assertGateCanHandle(visitorId: string, actor: any) {
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: { include: { host: { select: { id: true, fullName: true, email: true } } } } } });
+    if (!visitor) throw new NotFoundException('Guest not found');
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && visitor.invite.organisationId !== actor.orgId) throw new NotFoundException('Guest not found');
+    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not checkpoint operations');
+    return visitor;
+  }
+
+  /** Gate officer takes a live photo of a guest who had no email (no registration link). */
+  async uploadGatePhoto(visitorId: string, file: Express.Multer.File, actor: any) {
+    if (!file?.buffer?.length) throw new BadRequestException('No photo received');
+    if (!/^image\/(jpeg|png|webp)$/.test(file.mimetype || '')) throw new BadRequestException('Photo must be JPEG, PNG or WebP');
+    const visitor = await this.assertGateCanHandle(visitorId, actor);
+    if (visitor.invite.cancelledAt || visitor.invite.status === 'REVOKED') throw new BadRequestException('This visit was cancelled by the host');
+    if (visitor.photoPath) throw new BadRequestException('This guest already has a photo');
+    if (['DENIED', 'CANCELLED', 'EXITED'].includes(visitor.status)) throw new BadRequestException('This visit is already closed');
+    if (visitor.identityStatus === 'PENDING') throw new BadRequestException('Waiting for the host — retake after they respond');
+    const ext = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
+    const dir = this.photoDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const name = `${visitorId}-gate-${uuidv4()}${ext}`;
+    fs.writeFileSync(path.join(dir, name), file.buffer);
+    // v32: paper requests (host without an account) — the officer checked the passphrase in person,
+    // so the live photo becomes the guest's photo straight away (nobody to confirm it in the app).
+    const paper = !!visitor.invite.hostName;
+    const updated = await this.prisma.visitor.update({
+      where: { id: visitorId },
+      data: paper
+        ? { gatePhotoPath: name, photoPath: name, photoTakenAt: new Date(), identityStatus: 'CONFIRMED', identityReviewedAt: new Date(), identityReviewedById: actor.id }
+        : { gatePhotoPath: name, identityStatus: 'CAPTURED', identityReviewedAt: null, identityReviewedById: null },
+    });
+    await this.audit.log({ action: 'GATE_GUEST_PHOTO_TAKEN', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { guest: visitor.fullName, paperRequest: paper } });
+    if (paper) await this.hostEvents.visitorEvent(visitorId, { type: 'PHOTO_CAPTURED', title: 'Guest photo taken at the gate', body: `${visitor.fullName} (host ${visitor.invite.hostName}) was photographed at the gate.`, email: 'none' });
+    return { id: updated.id, gatePhotoPath: updated.gatePhotoPath, photoPath: updated.photoPath, identityStatus: updated.identityStatus };
+  }
+
+  /** Send the captured photos to the host, who ticks or crosses each guest. */
+  async requestIdentityConfirmation(visitorIds: string[], actor: any) {
+    const ids = Array.from(new Set((visitorIds || []).map(String))).slice(0, 30);
+    if (!ids.length) throw new BadRequestException('Choose at least one guest');
+    const visitors = [] as any[];
+    for (const id of ids) visitors.push(await this.assertGateCanHandle(id, actor));
+    const ready = visitors.filter((v) => v.gatePhotoPath && v.identityStatus === 'CAPTURED' && !v.photoPath);
+    if (!ready.length) throw new BadRequestException('Take a photo of each guest first');
+    const now = new Date();
+    await this.prisma.visitor.updateMany({ where: { id: { in: ready.map((v) => v.id) } }, data: { identityStatus: 'PENDING', identityRequestedAt: now, identityRequestedById: actor.id } });
+    const byHost = new Map<string, any[]>();
+    for (const v of ready) {
+      const k = v.invite.hostId;
+      byHost.set(k, [...(byHost.get(k) || []), v]);
+    }
+    for (const [hostId, list] of byHost) {
+      const host = list[0].invite.host;
+      const names = list.map((v) => v.fullName).join(', ');
+      await this.notifications.create({
+        userId: hostId,
+        title: 'Confirm your guest' + (list.length > 1 ? 's' : ''),
+        body: `The gate photographed ${names}. Tick the people you are expecting.`,
+        meta: { type: 'IDENTITY_CONFIRM', visitorIds: list.map((v) => v.id), inviteId: list[0].inviteId, url: '/identity' },
+        channels: ['in_app'],
+      }).catch(() => {});
+      if (host?.email) {
+        const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+        await this.mail.sendNotice({
+          to: host.email,
+          organisationId: list[0].invite.organisationId,
+          subject: `Confirm guest identity: ${names}`,
+          eyebrow: 'At the gate',
+          title: `Please confirm ${list.length > 1 ? 'these guests' : 'this guest'}`,
+          paragraphs: [`${names} ${list.length > 1 ? 'are' : 'is'} at the gate for "${list[0].invite.purpose}" without a registered photo. Open the app to confirm each person with a tick, or decline with an X.`],
+          button: base ? { href: `${base}/identity`, label: 'Confirm identity' } : null,
+        }).catch(() => null);
+      }
+    }
+    await this.audit.log({ action: 'GUEST_IDENTITY_REQUESTED', entity: 'Invite', entityId: ready[0].inviteId, userId: actor.id, details: { guests: ready.map((v) => v.fullName) } });
+    return { requested: ready.map((v) => v.id) };
+  }
+
+  async listCheckpoints(actor: any) {
+    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('gates.manage')) throw new ForbiddenException('Gate oversight permission is required');
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(actor.role);
+    const where: any = global ? {} : { location: { organisationId: actor.orgId } };
+    // Super Gate Officers are automatically on every checkpoint across agencies (same as Super Admin).
+    if (actor.role === 'GATE') where.assignments = { some: { userId: actor.id } };
+    return this.prisma.gate.findMany({ where: { ...where, isActive: true }, include: { location: { select: { name: true, organisationId: true, organisation: { select: { name: true } } } } }, orderBy: [{ locationId: 'asc' }, { sequence: 'asc' }] });
+  }
+
+  async recordCheckpoint(body: any, actor: any) {
+    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not checkpoint operations');
+    const visitorId = String(body.visitorId || '');
+    const gateId = String(body.gateId || '');
+    const decision = String(body.decision || '').toUpperCase();
+    if (!visitorId || !gateId || !['PASSED', 'DENIED'].includes(decision)) throw new BadRequestException('Visitor, gate and a PASSED or DENIED decision are required');
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
+    if (!visitor) throw new NotFoundException('Visitor not found');
+    if ((visitor.status === VisitStatus.INVITED || visitor.status === VisitStatus.CANCELLED) && (visitor.invite.cancelledAt || visitor.invite.status === 'REVOKED')) throw new BadRequestException('This visit was cancelled by the host — entry is not allowed');
+    if (decision === 'PASSED' && !visitor.photoPath) throw new BadRequestException('Visitor has not completed photo capture');
+    if (decision === 'DENIED' && !String(body.notes || '').trim()) throw new BadRequestException('A reason is required when denying entry');
+    const gate = await this.prisma.gate.findFirst({ where: { id: gateId, isActive: true }, include: { location: true, assignments: true } });
+    if (!gate) throw new NotFoundException('Active gate not found');
+    if (!gate.admissionsEnabled && decision === 'PASSED') throw new BadRequestException('Admissions are disabled at this checkpoint. Contact the agency administrator.');
+    if (gate.particularsCheckEnabled && body.particularsChecked !== true) throw new BadRequestException('Confirm that particulars have been checked at this checkpoint before proceeding.');
+    if (decision === 'PASSED' && gate.dailyAdmissionLimit) { const start = new Date(); start.setHours(0,0,0,0); const admittedToday = await this.prisma.gateVisit.count({ where: { gateId, decision: 'PASSED', occurredAt: { gte: start } } }); if (admittedToday >= gate.dailyAdmissionLimit) throw new BadRequestException('This checkpoint has reached its daily admission limit.'); }
+    const global = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Gate not found');
+    if (visitor.invite.organisationId !== gate.location.organisationId) throw new BadRequestException('This visitor is not invited to this agency');
+    if (visitor.invite.locationId && visitor.invite.locationId !== gate.locationId) throw new BadRequestException('This gate is outside the visitor destination');
+    if (actor.role === 'GATE' && !gate.assignments.some(a => a.userId === actor.id)) throw new BadRequestException('You are not assigned to this checkpoint');
+    if (visitor.status === VisitStatus.EXITED || visitor.status === VisitStatus.CANCELLED) throw new BadRequestException('This visit is already closed');
+    if (visitor.status === VisitStatus.DENIED) throw new BadRequestException('This visitor has already been denied');
+    const direction = String(body.direction || '').toUpperCase() === 'EXIT' || visitor.status === VisitStatus.ARRIVED ? 'EXIT' : 'ENTRY';
+    if (direction === 'ENTRY' && (visitor.invite.cancelledAt || visitor.invite.status === 'REVOKED')) throw new BadRequestException('This visit was cancelled by the host — entry is not allowed');
+    if (direction === 'ENTRY' && decision === 'PASSED' && visitor.invite.status !== 'ACTIVE' && visitor.invite.status !== 'USED' && visitor.invite.status !== 'EXPIRED') throw new BadRequestException('This invite is not active');
+    const modes = await allowedEntryModes(this.prisma);
+    if (direction === 'ENTRY' && body.entryMode && !modes.includes(String(body.entryMode))) throw new BadRequestException(`${String(body.entryMode).toLowerCase()} entry is not accepted`);
+    const plate = vehicleMode(body.entryMode) ? cleanPlate(body.vehiclePlate) : null;
+    const vDetails = vehicleMode(body.entryMode) ? cleanVehicleDetails(body.vehicleDetails) : null;
+    if (direction === 'EXIT' && visitor.status !== VisitStatus.ARRIVED) throw new BadRequestException('Exit checkpoints start after the visitor has arrived');
+    if (direction === 'EXIT' && decision === 'PASSED') {
+      await this.assertParticularsResolved(visitorId, { gateId });
+      // v22: a tag / printed pass issued at this gate must be returned or reported lost first.
+      await this.passes.assertNoOpenItems(visitorId, await this.pointIds(gate));
+      const below = await this.prisma.gate.count({ where: { locationId: gate.locationId, isActive: true, sequence: { lt: gate.sequence } } });
+      if (below === 0) await this.passes.assertNoOpenItems(visitorId);
+    }
+    // v32: entry points — gates at the same site + sequence are ONE gate (e.g. North/South of Main Gate).
+    const points = await this.pointIds(gate);
+    await this.assertNotClearedAtPoints(visitorId, points, direction);
+    if (direction === 'ENTRY') {
+      const earlier = await this.prisma.gate.findMany({ where: { locationId: gate.locationId, isActive: true, sequence: { lt: gate.sequence } }, orderBy: { sequence: 'asc' } });
+      for (const group of this.bySequence(earlier)) {
+        const event = await this.prisma.gateVisit.findFirst({ where: { visitorId, gateId: { in: await this.pointIds(group[0]) }, direction: 'ENTRY' }, orderBy: { occurredAt: 'desc' } });
+        if (!event || event.decision !== 'PASSED') throw new BadRequestException(`Visitor must pass ${this.groupLabel(group)} before this checkpoint`);
+      }
+    } else {
+      const later = await this.prisma.gate.findMany({ where: { locationId: gate.locationId, isActive: true, sequence: { gt: gate.sequence } }, orderBy: { sequence: 'desc' } });
+      for (const group of this.bySequence(later)) {
+        const event = await this.prisma.gateVisit.findFirst({ where: { visitorId, gateId: { in: await this.pointIds(group[0]) }, direction: 'EXIT' }, orderBy: { occurredAt: 'desc' } });
+        if (!event || event.decision !== 'PASSED') throw new BadRequestException(`Visitor must pass ${this.groupLabel(group)} before this exit checkpoint`);
+      }
+    }
+    const particulars = Array.isArray(body.particulars) ? body.particulars : [];
+    for (const item of particulars) {
+      if (!['WITHHELD', 'ALLOWED'].includes(String(item.kind || '').toUpperCase()) || !String(item.description || '').trim()) throw new BadRequestException('Each particular needs a description and WITHHELD or ALLOWED classification');
+      if (item.imagePath && !/^\/visitors\/particulars\/[a-f0-9-]+\.webp$/i.test(String(item.imagePath))) throw new BadRequestException('Particular image must be uploaded through the evidence capture endpoint');
+    }
+    const evidencePhotos = Array.isArray(body.evidencePhotos) ? body.evidencePhotos.map((p: unknown) => String(p)) : [];
+    if (evidencePhotos.length > 10) throw new BadRequestException('A checkpoint can have at most 10 evidence photos');
+    if (evidencePhotos.some((p: string) => !/^\/visitors\/particulars\/[a-f0-9-]+\.webp$/i.test(p))) throw new BadRequestException('All checkpoint photos must be uploaded WebP evidence images');
+    const event = await this.prisma.$transaction(async tx => {
+      // v32: two entry points clearing the same guest at the same moment — only one wins.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${visitorId}))::text`;
+      const again = await tx.gateVisit.findFirst({ where: { visitorId, gateId: { in: points }, direction }, orderBy: { occurredAt: 'desc' }, include: { gate: { select: { name: true } } } });
+      if (again?.decision === 'PASSED') throw new BadRequestException(`Already cleared at ${again.gate.name}`);
+      const created = await tx.gateVisit.create({ data: { visitorId, gateId, officerId: actor.id, decision, direction, particularsChecked: body.particularsChecked === true, evidencePhotos, notes: body.notes ? String(body.notes).slice(0, 2000) : null } });
+      if (particulars.length) await tx.gateParticular.createMany({ data: particulars.map(item => ({ gateVisitId: created.id, kind: String(item.kind).toUpperCase(), description: String(item.description).trim().slice(0, 500), quantity: Math.max(1, Math.min(1000, Number(item.quantity) || 1)), imagePath: item.imagePath ? String(item.imagePath).slice(0, 1000) : null, createdById: actor.id })) });
+      if (decision === 'DENIED' && direction === 'ENTRY') await tx.visitor.update({ where: { id: visitorId }, data: { status: VisitStatus.DENIED, deniedAt: new Date(), deniedReason: String(body.notes || 'Denied at checkpoint').slice(0, 1000), entryById: actor.id } });
+      else if (decision === 'PASSED' && direction === 'ENTRY') {
+        const remaining = await tx.gate.count({ where: { locationId: gate.locationId, isActive: true, sequence: { gt: gate.sequence } } });
+        if (remaining === 0) await tx.visitor.update({ where: { id: visitorId }, data: { status: VisitStatus.ARRIVED, hostAvailabilityStatus: 'PENDING', hostWaitUntil: null, hostRespondedAt: null, lastHostPromptAt: new Date(), enteredAt: visitor.enteredAt || new Date(), entryById: actor.id, gateId, entryMode: Object.values(EntryMode).includes(body.entryMode) ? body.entryMode : EntryMode.PEDESTRIAN, vehiclePlate: plate || (vehicleMode(body.entryMode) ? visitor.invite.vehiclePlate : null), vehicleDetails: vDetails || (vehicleMode(body.entryMode) ? visitor.invite.vehicleDetails : null) } });
+      } else if (decision === 'PASSED' && direction === 'EXIT') {
+        const remaining = await tx.gate.count({ where: { locationId: gate.locationId, isActive: true, sequence: { lt: gate.sequence } } });
+        if (remaining === 0) {
+          await this.assertParticularsResolved(visitorId);
+          await tx.visitor.update({ where: { id: visitorId }, data: { status: VisitStatus.EXITED, exitedAt: new Date(), exitById: actor.id } });
+        }
+      }
+      return tx.gateVisit.findUnique({ where: { id: created.id }, include: { gate: { include: { location: true } }, officer: { select: { id: true, fullName: true } }, particulars: true } });
+    });
+    await this.audit.log({ action: `CHECKPOINT_${decision}`, entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { gateId, gateName: gate.name, particulars: particulars.length, direction } });
+    this.syncPoints(gate, visitorId, actor.id).catch(() => null);
+    await this.notifyCheckpoint(visitorId, gate, { decision, direction, prevStatus: visitor.status, notes: String(body.notes || '').trim(), withheld: particulars.filter((i: any) => String(i.kind).toUpperCase() === 'WITHHELD').map((i: any) => String(i.description).trim()) });
+    await this.mirrorCheckpointToLinked(visitorId, gate, { decision, direction, actorId: actor.id, particularsChecked: body.particularsChecked === true, evidencePhotos, notes: body.notes ? String(body.notes).slice(0, 2000) : null, entryMode: body.entryMode });
+    return event;
+  }
+
+
+  async respondHostAvailability(visitorId: string, body: any, actor: any) {
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
+    if (!visitor) throw new NotFoundException('Visitor not found');
+    if (visitor.invite.hostId !== actor.id) throw new NotFoundException('Visitor not found');
+    if (visitor.status !== VisitStatus.ARRIVED) throw new BadRequestException('Host availability can only be confirmed after the final checkpoint');
+    const available = body.available === true;
+    const waitMinutes = Math.max(1, Math.min(60, Number(body.waitMinutes) || 1));
+    const updated = await this.prisma.visitor.update({ where: { id: visitorId }, data: {
+      hostAvailabilityStatus: available ? 'AVAILABLE' : 'WAITING',
+      hostWaitUntil: available ? null : new Date(Date.now() + waitMinutes * 60000),
+      hostRespondedAt: new Date(),
+    } });
+    await this.audit.log({ action: available ? 'HOST_CONFIRMED_AVAILABILITY' : 'HOST_REQUESTED_VISITOR_WAIT', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { waitMinutes: available ? 0 : waitMinutes } });
+    return { status: updated.hostAvailabilityStatus, waitUntil: updated.hostWaitUntil, respondedAt: updated.hostRespondedAt };
+  }
+
+  async requestHostAvailability(visitorId: string, actor: any) {
+    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only checkpoint officers can request host availability');
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: { include: { host: true } } } });
+    if (!visitor || visitor.status !== VisitStatus.ARRIVED) throw new NotFoundException('Arrived visitor not found');
+    const platformAdmin = actor.role === 'SUPER_ADMIN' || actor.role === 'GLOBAL_GATE';
+    const assignments = await this.prisma.gateOfficerAssignment.findMany({ where: { userId: actor.id, gate: { location: { organisationId: visitor.invite.organisationId } } }, select: { gateId: true } });
+    if (!platformAdmin && (!assignments.length || (actor.role === 'GATE' && visitor.invite.organisationId !== actor.orgId))) throw new NotFoundException('Visitor not found');
+    if (visitor.lastHostPromptAt && Date.now() - visitor.lastHostPromptAt.getTime() < 60000) throw new BadRequestException('Please wait at least one minute before asking the host again');
+    await this.prisma.visitor.update({ where: { id: visitorId }, data: { lastHostPromptAt: new Date(), hostAvailabilityStatus: 'PENDING' } });
+    const host = visitor.invite.host;
+    await this.notifications.create({ userId: host.id, title: 'Host availability requested', body: `${visitor.fullName} is waiting at the final checkpoint. Please confirm availability or choose a wait time.`, meta: { visitorId, inviteId: visitor.inviteId, type: 'HOST_ARRIVAL_CONFIRMATION', requiresHostResponse: true }, channels: ['in_app'] });
+    if (host.email) await this.mail.sendHostVisitorUpdate({ to: host.email, hostName: host.fullName, guestName: visitor.fullName, purpose: visitor.invite.purpose, event: 'arrival', at: new Date().toISOString(), organisationId: visitor.invite.organisationId }).catch(() => {});
+    return { ok: true, requestedAt: new Date() };
+  }
+
+  async returnParticular(particularId: string, actor: any) {
+    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not custody operations');
+    const item = await this.prisma.gateParticular.findUnique({ where: { id: particularId }, include: { gateVisit: { include: { gate: { include: { location: true, assignments: true } } } } } });
+    if (!item) throw new NotFoundException('Particular record not found');
+    if (item.kind !== 'WITHHELD') throw new BadRequestException('Only withheld items can be marked as returned');
+    if (item.returnedAt) throw new BadRequestException('This item has already been marked as returned');
+    const gate = item.gateVisit.gate;
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Particular record not found');
+    if (actor.role === 'GATE' && !(await this.assignedAtPoints(gate, actor.id))) throw new ForbiddenException(`This item can only be returned or seized at ${gate.name}`);
+    return this.resolveParticular(particularId, actor, { resolution: 'RETURNED' });
+  }
+
+  async resolveParticular(particularId: string, actor: any, body: { resolution: string; note?: string }) {
+    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not custody operations');
+    const item = await this.prisma.gateParticular.findUnique({ where: { id: particularId }, include: { gateVisit: { include: { gate: { include: { location: true, assignments: true } } } } } });
+    if (!item) throw new NotFoundException('Particular record not found');
+    if (item.kind !== 'WITHHELD') throw new BadRequestException('Only withheld items can be resolved');
+    if (item.resolvedAt || item.returnedAt) throw new BadRequestException('This item has already been resolved');
+    const resolution = String(body.resolution || '').toUpperCase();
+    if (!['RETURNED', 'SEIZED', 'OTHER'].includes(resolution)) throw new BadRequestException('Mark the item as returned, seized, or other');
+    const note = String(body.note || '').trim();
+    if (resolution === 'OTHER' && note.length < 2) throw new BadRequestException('Add a short note when resolving as other');
+    const gate = item.gateVisit.gate;
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Particular record not found');
+    if (actor.role === 'GATE' && !(await this.assignedAtPoints(gate, actor.id))) throw new ForbiddenException(`This item can only be returned or seized at ${gate.name}`);
+    const now = new Date();
+    const updated = await this.prisma.gateParticular.update({
+      where: { id: particularId },
+      data: {
+        resolution,
+        resolutionNote: note ? note.slice(0, 500) : null,
+        resolvedAt: now,
+        resolvedById: actor.id,
+        returnedAt: resolution === 'RETURNED' ? now : item.returnedAt,
+        returnedById: resolution === 'RETURNED' ? actor.id : item.returnedById,
+      },
+    });
+    await this.audit.log({ action: `WITHHELD_ITEM_${resolution}`, entity: 'GateParticular', entityId: particularId, userId: actor.id, details: { gateId: gate.id, visitorId: item.gateVisit.visitorId, note } });
+    const label = resolution === 'RETURNED' ? 'returned' : resolution === 'SEIZED' ? 'seized' : 'resolved';
+    const vName = (await this.prisma.visitor.findUnique({ where: { id: item.gateVisit.visitorId }, select: { fullName: true } }))?.fullName || 'Your guest';
+    await this.hostEvents.visitorEvent(item.gateVisit.visitorId, {
+      type: `ITEM_${resolution}`,
+      title: `Withheld item ${label}`,
+      body: `${item.description} was ${label} at ${gate.name} for ${vName}${note ? `: ${note}` : ''}.`,
+      meta: { gateId: gate.id, particularId },
+      email: resolution === 'RETURNED' ? 'none' : 'now',
+    });
+    return updated;
+  }
+
+  async checkpointHistory(visitorId: string, actor: any) {
+    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
+    if (!visitor) throw new NotFoundException('Visitor not found');
+    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(actor.role);
+    if (!global && visitor.invite.organisationId !== actor.orgId) throw new NotFoundException('Visitor not found');
+    return this.prisma.gateVisit.findMany({ where: { visitorId }, include: { gate: { include: { location: true } }, officer: { select: { id: true, fullName: true } }, particulars: { orderBy: { createdAt: 'asc' } } }, orderBy: { occurredAt: 'asc' } });
+  }
+
+  async recordEntry(dto: EntryDto, actor: any) {
+    const visitor = await this.prisma.visitor.findUnique({
+      where: { id: dto.visitorId },
+      include: {
+        invite: {
+          include: { host: true },
+        },
+      },
+    });
+
+    if (!visitor || (actor.role !== 'SUPER_ADMIN' && visitor.invite.organisationId !== actor.orgId)) throw new NotFoundException('Visitor not found');
+    if (visitor.status === VisitStatus.ARRIVED) {
+      throw new BadRequestException('Visitor already recorded as entered');
+    }
+    if (visitor.status === VisitStatus.EXITED) {
+      throw new BadRequestException('Visitor has already exited');
+    }
+    if (visitor.invite.cancelledAt || visitor.invite.status === 'REVOKED') {
+      throw new BadRequestException('This visit was cancelled by the host — entry is not allowed');
+    }
+    if (!visitor.photoPath) {
+      throw new BadRequestException('Visitor has not completed photo capture');
+    }
+    if (visitor.status !== VisitStatus.INVITED) throw new BadRequestException('This visit is closed');
+    // Gate passes are mandatory whenever the route has checkpoints (fixes the v18 mobile bypass).
+    const route = await this.routeGates(visitor.invite);
+    if (route.length) {
+      throw new BadRequestException(`Entry must go through the checkpoints: ${route.map((g: any) => g.name).join(' → ')}`);
+    }
+    const modes = await allowedEntryModes(this.prisma);
+    if (dto.entryMode && !modes.includes(dto.entryMode)) throw new BadRequestException(`${dto.entryMode.toLowerCase()} entry is not accepted`);
+
+    const updated = await this.prisma.visitor.update({
+      where: { id: dto.visitorId },
+      data: {
+        status: VisitStatus.ARRIVED,
+        entryMode: dto.entryMode || EntryMode.PEDESTRIAN,
+        enteredAt: new Date(),
+        entryById: actor.id,
+        gateNotes: dto.notes,
+      },
+    });
+
+    await this.audit.log({
+      action: 'ENTRY_RECORDED',
+      entity: 'Visitor',
+      entityId: visitor.id,
+      userId: actor.id,
+      details: { mode: dto.entryMode, notes: dto.notes },
+    });
+
+    // Notify host (in-app + optional SMS/WhatsApp)
+    const host = await this.prisma.user.findUnique({
+      where: { id: visitor.invite.hostId },
+      select: { id: true, phone: true },
+    });
+    const channels: Array<'in_app' | 'sms' | 'whatsapp'> = ['in_app'];
+    if (process.env.SMS_PROVIDER && process.env.SMS_PROVIDER !== 'log' && host?.phone) {
+      channels.push('sms');
+    }
+    if (process.env.WHATSAPP_PROVIDER && process.env.WHATSAPP_PROVIDER !== 'log' && host?.phone) {
+      channels.push('whatsapp');
+    }
+    await this.notifications.create({
+      userId: visitor.invite.hostId,
+      title: 'Visitor Arrived',
+      body: `${visitor.fullName} has entered the premises.`,
+      meta: { visitorId: visitor.id, inviteId: visitor.inviteId, type: 'ARRIVAL' },
+      channels,
+      phone: host?.phone || undefined,
+    });
+
+    const hostEmail = await this.prisma.user.findUnique({
+      where: { id: visitor.invite.hostId },
+      select: { email: true, fullName: true },
+    });
+    if (hostEmail?.email) {
+      await this.mail.sendHostVisitorUpdate({
+        to: hostEmail.email,
+        hostName: hostEmail.fullName,
+        guestName: visitor.fullName,
+        purpose: visitor.invite.purpose,
+        event: 'arrival',
+        at: updated.enteredAt?.toISOString(),
+        organisationId: visitor.invite.organisationId,
+      });
+    }
+
+    return updated;
+  }
+
+  async recordExit(visitorId: string, actor: any, notes?: string) {
+    const visitor = await this.prisma.visitor.findUnique({
+      where: { id: visitorId },
+      include: {
+        invite: { include: { host: true } },
+      },
+    });
+
+    const globalExit = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!visitor || (!globalExit && visitor.invite.organisationId !== actor.orgId)) throw new NotFoundException('Visitor not found');
+    if (visitor.status !== VisitStatus.ARRIVED) {
+      throw new BadRequestException('Visitor is not currently on premises');
+    }
+    await this.assertParticularsResolved(visitorId);
+    await this.assertExitCheckpointsComplete(visitor);
+    await this.passes.assertNoOpenItems(visitorId);
+
+    const updated = await this.prisma.visitor.update({
+      where: { id: visitorId },
+      data: {
+        status: VisitStatus.EXITED,
+        exitedAt: new Date(),
+        exitById: actor.id,
+        gateNotes: notes ? `${visitor.gateNotes || ''}\nExit: ${notes}`.trim() : visitor.gateNotes,
+      },
+    });
+
+    await this.audit.log({
+      action: 'EXIT_RECORDED',
+      entity: 'Visitor',
+      entityId: visitor.id,
+      userId: actor.id,
+      details: { notes },
+    });
+
+    const hostExit = await this.prisma.user.findUnique({
+      where: { id: visitor.invite.hostId },
+      select: { id: true, phone: true },
+    });
+    const channelsExit: Array<'in_app' | 'sms' | 'whatsapp'> = ['in_app'];
+    if (process.env.SMS_PROVIDER && process.env.SMS_PROVIDER !== 'log' && hostExit?.phone) {
+      channelsExit.push('sms');
+    }
+    if (process.env.WHATSAPP_PROVIDER && process.env.WHATSAPP_PROVIDER !== 'log' && hostExit?.phone) {
+      channelsExit.push('whatsapp');
+    }
+    await this.notifications.create({
+      userId: visitor.invite.hostId,
+      title: 'Visitor Exited',
+      body: `${visitor.fullName} has left the premises.`,
+      meta: { visitorId: visitor.id, inviteId: visitor.inviteId, type: 'EXIT' },
+      channels: channelsExit,
+      phone: hostExit?.phone || undefined,
+    });
+
+    if (hostExit) {
+      const hostFull = await this.prisma.user.findUnique({
+        where: { id: visitor.invite.hostId },
+        select: { email: true, fullName: true },
+      });
+      if (hostFull?.email) {
+        await this.mail.sendHostVisitorUpdate({
+          to: hostFull.email,
+          hostName: hostFull.fullName,
+          guestName: visitor.fullName,
+          purpose: visitor.invite.purpose,
+          event: 'exit',
+          at: updated.exitedAt?.toISOString(),
+          organisationId: visitor.invite.organisationId,
+        });
+      }
+    }
+
+    return updated;
+  }
+
+  /** Recent invites/visits for gate dashboard */
+
+  async denyEntry(visitorId: string, actor: any, reason: string) {
+    if (!reason?.trim()) {
+      throw new BadRequestException('A comment is required when declining entry');
+    }
+    const visitor = await this.prisma.visitor.findUnique({
+      where: { id: visitorId },
+      include: { invite: { include: { host: true } } },
+    });
+    if (!visitor || (actor.role !== 'SUPER_ADMIN' && visitor.invite.organisationId !== actor.orgId)) throw new NotFoundException('Visitor not found');
+    if (visitor.status === VisitStatus.ARRIVED) {
+      throw new BadRequestException('Visitor already on premises — use exit instead');
+    }
+    if (visitor.status === VisitStatus.EXITED) {
+      throw new BadRequestException('Visitor has already exited');
+    }
+    if (visitor.status === VisitStatus.DENIED) {
+      throw new BadRequestException('Entry already declined');
+    }
+
+    const updated = await this.prisma.visitor.update({
+      where: { id: visitorId },
+      data: {
+        status: VisitStatus.DENIED,
+        deniedAt: new Date(),
+        deniedReason: reason.trim(),
+        entryById: actor.id,
+        gateNotes: reason.trim(),
+      },
+    });
+
+    await this.audit.log({
+      action: 'ENTRY_DENIED',
+      entity: 'Visitor',
+      entityId: visitor.id,
+      userId: actor.id,
+      details: { reason: reason.trim() },
+    });
+
+    await this.notifications.create({
+      userId: visitor.invite.hostId,
+      title: 'Visitor entry declined',
+      body: `${visitor.fullName} was declined at the gate: ${reason.trim()}`,
+      meta: { visitorId: visitor.id, inviteId: visitor.inviteId, type: 'ENTRY_DENIED' },
+      channels: ['in_app'],
+    });
+
+    const host = await this.prisma.user.findUnique({
+      where: { id: visitor.invite.hostId },
+      select: { email: true, fullName: true },
+    });
+    if (host?.email) {
+      await this.mail.sendHostVisitorUpdate({
+        to: host.email,
+        hostName: host.fullName,
+        guestName: visitor.fullName,
+        purpose: visitor.invite.purpose,
+        event: 'denied',
+        reason: reason.trim(),
+        at: updated.deniedAt?.toISOString(),
+        organisationId: visitor.invite.organisationId,
+      }).catch(() => {});
+    }
+
+    return updated;
+  }
+
+  async listVisits(actor: any, filter?: string, q?: string) {
+    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
+    const globalAccess = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const tomorrow = startOfNextLocalDay();
+    const term = String(q || '').trim();
+    const digits = term.replace(/\D+/g, '');
+    const searchOr: any[] = [];
+    if (term) {
+      const contains = { contains: term, mode: 'insensitive' as const };
+      searchOr.push(
+        { fullName: contains },
+        { phone: contains },
+        { email: contains },
+        { invite: { purpose: contains } },
+        { invite: { passphrase: contains } },
+        { invite: { token: contains } },
+        { invite: { host: { fullName: contains } } },
+        { invite: { organisation: { name: contains } } },
+        { invite: { organisation: { code: contains } } },
+      );
+      if (digits.length >= 4) {
+        searchOr.push({ phone: { contains: digits, mode: 'insensitive' as const } });
+      }
+    }
+    const orgInvite: { organisationId?: string } = globalAccess ? {} : { organisationId: actor.orgId };
+    const scheduledWhere = {
+      invite: { ...orgInvite, expectedAt: { gte: tomorrow } },
+      status: 'INVITED' as const,
+    };
+    const currentWhere = {
+      invite: orgInvite,
+      OR: [
+        { invite: { expectedAt: null } },
+        { invite: { expectedAt: { lt: tomorrow } } },
+        { status: { in: [VisitStatus.ARRIVED, VisitStatus.EXITED, VisitStatus.DENIED, VisitStatus.CANCELLED] } },
+      ],
+    };
+
+    const visitors = await this.prisma.visitor.findMany({
+      where: {
+        ...(filter === 'scheduled' ? scheduledWhere : currentWhere),
+        ...(term ? { AND: [{ OR: searchOr }] } : {}),
+      },
+      include: {
+        invite: {
+          include: {
+            host: { select: { fullName: true, email: true } },
+            organisation: { select: { name: true, code: true } },
+          },
+        },
+        passItems: { where: { status: 'ISSUED' }, select: { id: true, kind: true, tagNumber: true, gate: { select: { name: true } } } },
+      },
+      orderBy: filter === 'scheduled' ? { createdAt: 'asc' } : { createdAt: 'desc' },
+      take: 250,
+    });
+
+    const rows = visitors.map((v) => ({
+      visitorId: v.id,
+      fullName: v.fullName,
+      phone: v.phone,
+      status: v.status,
+      photoPath: v.photoPath,
+      noContact: !v.email,
+      identityStatus: v.identityStatus || null,
+      cancelled: !!v.invite.cancelledAt,
+      inviteStatus: v.invite.status,
+      entryMode: v.entryMode,
+      vehiclePlate: v.vehiclePlate || v.invite.vehiclePlate || null,
+      enteredAt: v.enteredAt,
+      exitedAt: v.exitedAt,
+      deniedAt: v.deniedAt,
+      inviteId: v.invite.id,
+      purpose: v.invite.purpose,
+      passphrase: v.invite.passphrase,
+      hostName: v.invite.host?.fullName,
+      agencyName: v.invite.organisation?.name || null,
+      agencyCode: v.invite.organisation?.code || null,
+      expectedAt: v.invite.expectedAt,
+      createdAt: v.createdAt,
+      scheduled: filter === 'scheduled',
+      openPassItems: (v as any).passItems?.length || 0,
+      openPassKinds: [...new Set(((v as any).passItems || []).map((i: any) => i.kind))],
+      openPassGates: ((v as any).passItems || []).map((i: any) => ({ id: i.id, kind: i.kind, gateName: i.gate?.name || null, tagNumber: i.tagNumber || null })),
+    }));
+
+    // Sort scheduled by expected date, current by most recent activity.
+    rows.sort((a, b) => {
+      if (filter === 'scheduled') {
+        return new Date(a.expectedAt || a.createdAt).getTime() - new Date(b.expectedAt || b.createdAt).getTime();
+      }
+      const da = new Date(a.enteredAt || a.exitedAt || a.createdAt).getTime();
+      const db = new Date(b.enteredAt || b.exitedAt || b.createdAt).getTime();
+      return db - da;
+    });
+
+    if (filter === 'arrived' || filter === 'on_site') return rows.filter((r) => r.status === 'ARRIVED');
+    if (filter === 'exited') return rows.filter((r) => r.status === 'EXITED');
+    if (filter === 'pending') return rows.filter((r) => r.status === 'INVITED');
+    return rows;
+  }
+
+  /**
+   * Staff permanent QR attendance.
+   * Day boundary: APP_TIMEZONE (default Africa/Lagos).
+   * First scan of the day → arrival. Later scans → set/refresh exit time.
+   */
+  async scanStaffAttendance(staffToken: string, actor?: any) {
+    if (!actor) throw new ForbiddenException('Sign in required to record staff attendance');
+    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) {
+      throw new ForbiddenException('Only gate officers (and Super Admin) can record staff attendance');
+    }
+    const staff = await this.prisma.user.findFirst({
+      where: { staffQrToken: staffToken, isActive: true },
+      select: {
+        id: true,
+        fullName: true,
+        role: true,
+        organisationId: true,
+        avatarPath: true,
+        staffBadgePhotoPath: true,
+        organisation: { select: { id: true, name: true, code: true } },
+      },
+    });
+    if (!staff) throw new NotFoundException('Staff QR not recognised');
+
+    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    if (!global && actor.role !== 'ADMIN' && staff.organisationId !== actor.orgId) {
+      throw new ForbiddenException('This staff member belongs to another agency');
+    }
+    if (actor.role === 'ADMIN' && staff.organisationId !== actor.orgId) {
+      throw new ForbiddenException('This staff member belongs to another agency');
+    }
+
+    const day = currentAttendanceDay();
+    const now = new Date();
+    const existing = await this.prisma.staffAttendance.findUnique({
+      where: { userId_day: { userId: staff.id, day } },
+    });
+
+    let attendance;
+    let action: 'ARRIVAL' | 'EXIT';
+    if (!existing) {
+      attendance = await this.prisma.staffAttendance.create({
+        data: {
+          userId: staff.id,
+          organisationId: staff.organisationId,
+          day,
+          arrivedAt: now,
+          scannedById: actor.id,
+        },
+      });
+      action = 'ARRIVAL';
+      await this.audit.log({
+        action: 'STAFF_ARRIVAL',
+        entity: 'StaffAttendance',
+        entityId: attendance.id,
+        userId: actor.id,
+        details: { staffId: staff.id, day: localDayKey(now) },
+      });
+    } else {
+      attendance = await this.prisma.staffAttendance.update({
+        where: { id: existing.id },
+        data: { exitedAt: now, scannedById: actor.id },
+      });
+      action = 'EXIT';
+      await this.audit.log({
+        action: 'STAFF_EXIT',
+        entity: 'StaffAttendance',
+        entityId: attendance.id,
+        userId: actor.id,
+        details: { staffId: staff.id, day: localDayKey(now) },
+      });
+    }
+
+    return {
+      kind: 'staff',
+      action,
+      timezone: attendanceTimeZone(),
+      day: localDayKey(now),
+      staff: {
+        id: staff.id,
+        fullName: staff.fullName,
+        role: staff.role,
+        roleLabel: roleLabel(staff.role),
+        organisation: staff.organisation,
+        avatarPath: staff.avatarPath,
+        staffBadgePhotoPath: staff.staffBadgePhotoPath,
+      },
+      attendance: {
+        id: attendance.id,
+        arrivedAt: attendance.arrivedAt,
+        exitedAt: attendance.exitedAt,
+      },
+      message:
+        action === 'ARRIVAL'
+          ? `${staff.fullName} marked arrived for ${localDayKey(now)}`
+          : `${staff.fullName} marked exited at ${now.toLocaleTimeString('en-GB', { timeZone: attendanceTimeZone(), hour: '2-digit', minute: '2-digit' })}`,
+    };
+  }
+
+  private async assertParticularsResolved(visitorId: string, opts?: { gateId?: string }) {
+    const open = await this.prisma.gateParticular.findFirst({
+      where: {
+        kind: 'WITHHELD',
+        resolvedAt: null,
+        returnedAt: null,
+        gateVisit: { visitorId, ...(opts?.gateId ? { gateId: { in: await this.pointIdsById(opts.gateId) } } : {}) },
+      },
+      include: { gateVisit: { include: { gate: { select: { name: true } } } } },
+    });
+    if (open) {
+      const at = open.gateVisit.gate?.name || 'a checkpoint';
+      if (opts?.gateId) {
+        throw new BadRequestException(`Cannot pass this exit yet: "${open.description}" is still withheld at ${at}. Return, seize, or otherwise resolve it at that gate.`);
+      }
+      throw new BadRequestException(`Cannot complete the final exit yet: "${open.description}" is still withheld at ${at}. Return, seize, or otherwise resolve it at that gate first.`);
+    }
+  }
+
+  private async assertExitCheckpointsComplete(visitor: { id: string; invite: { locationId?: string | null; organisationId?: string } }) {
+    // Every checkpoint the visitor entered through (plus the whole destination route when set)
+    // must record a passed exit — the legacy "Record exit" can never skip gate passes.
+    const entered = await this.prisma.gateVisit.findMany({ where: { visitorId: visitor.id, direction: 'ENTRY', decision: 'PASSED' }, select: { gateId: true } });
+    const ids = new Set(entered.map((e) => e.gateId));
+    const locationId = visitor.invite.locationId;
+    const gates = await this.prisma.gate.findMany({
+      where: { isActive: true, OR: [{ id: { in: [...ids] } }, ...(locationId ? [{ locationId }] : [])] },
+      orderBy: { sequence: 'desc' },
+    });
+    if (!gates.length) return;
+    for (const g of gates) {
+      const ev = await this.prisma.gateVisit.findFirst({ where: { visitorId: visitor.id, gateId: g.id, direction: 'EXIT' }, orderBy: { occurredAt: 'desc' } });
+      if (!ev || ev.decision !== 'PASSED') {
+        throw new BadRequestException(`Exit must pass through checkpoints. ${g.name} has not been cleared for exit.`);
+      }
+    }
+  }
+
+  private async mirrorCheckpointToLinked(visitorId: string, gate: any, opts: { decision: string; direction: string; actorId: string; particularsChecked: boolean; evidencePhotos: string[]; notes: string | null; entryMode?: any }) {
+    const linked = await linkSameDayVisits(this.prisma, visitorId);
+    const others = (linked.visitors || []).filter((v: any) => v.id !== visitorId && v.invite?.organisationId === gate.location.organisationId);
+    for (const other of others) {
+      if (other.status === 'EXITED' || other.status === 'CANCELLED' || other.status === 'DENIED') continue;
+      if (opts.direction === 'EXIT' && other.status !== 'ARRIVED') continue;
+      const existing = await this.prisma.gateVisit.findFirst({ where: { visitorId: other.id, gateId: { in: await this.pointIds(gate) }, direction: opts.direction }, orderBy: { occurredAt: 'desc' } });
+      if (existing?.decision === 'PASSED') continue;
+      // v22: never walk a linked visit out past a gate where its own tag / pass is still out.
+      if (opts.direction === 'EXIT' && opts.decision === 'PASSED' && (await this.passes.hasOpenItems(other.id, await this.pointIds(gate)))) continue;
+      await this.prisma.gateVisit.create({
+        data: { visitorId: other.id, gateId: gate.id, officerId: opts.actorId, decision: opts.decision, direction: opts.direction, particularsChecked: opts.particularsChecked, evidencePhotos: opts.evidencePhotos, notes: opts.notes },
+      });
+      if (opts.decision === 'DENIED' && opts.direction === 'ENTRY') {
+        await this.prisma.visitor.update({ where: { id: other.id }, data: { status: VisitStatus.DENIED, deniedAt: new Date(), deniedReason: (opts.notes || 'Denied at checkpoint').slice(0, 1000) } });
+      } else if (opts.decision === 'PASSED' && opts.direction === 'ENTRY') {
+        const remaining = await this.prisma.gate.count({ where: { locationId: gate.locationId, isActive: true, sequence: { gt: gate.sequence } } });
+        if (remaining === 0) await this.prisma.visitor.update({ where: { id: other.id }, data: { status: VisitStatus.ARRIVED, enteredAt: other.enteredAt || new Date(), entryById: opts.actorId, gateId: gate.id } });
+      } else if (opts.decision === 'PASSED' && opts.direction === 'EXIT') {
+        const remaining = await this.prisma.gate.count({ where: { locationId: gate.locationId, isActive: true, sequence: { lt: gate.sequence } } });
+        if (remaining === 0) {
+          try { await this.assertParticularsResolved(other.id); await this.passes.assertNoOpenItems(other.id); } catch { continue; }
+          await this.prisma.visitor.update({ where: { id: other.id }, data: { status: VisitStatus.EXITED, exitedAt: new Date(), exitById: opts.actorId } });
+        }
+      }
+      // v31: the linked visit's own host hears about it too (it was silent before).
+      await this.notifyCheckpoint(other.id, gate, { decision: opts.decision, direction: opts.direction, prevStatus: other.status, notes: opts.notes || '', withheld: [], mirrored: true });
+    }
+  }
+
+  /**
+   * v31: tell the host about one guest's checkpoint result.
+   * ENTRY pass (not last gate) / EXIT pass (not last gate): in-app now + email in the 1-minute digest.
+   * Final ENTRY = arrived (in-app + SMS/WhatsApp if configured + email now). Final EXIT = left (in-app + email now).
+   * DENIED and withheld items: in-app + email now.
+   */
+  private async notifyCheckpoint(visitorId: string, gate: any, o: { decision: string; direction: string; prevStatus: string; notes: string; withheld: string[]; mirrored?: boolean }) {
+    try {
+      const fresh = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
+      if (!fresh) return;
+      const name = fresh.fullName;
+      const viaLinked = o.mirrored ? ' (linked visit)' : '';
+      if (o.decision === 'DENIED') {
+        const what = o.direction === 'EXIT' ? 'exit was held' : 'was declined';
+        await this.notifications.create({ userId: fresh.invite.hostId, title: o.direction === 'EXIT' ? 'Visitor exit held' : 'Visitor entry declined', body: `${name} ${what} at ${gate.name}${viaLinked}: ${o.notes}`, meta: { visitorId, inviteId: fresh.inviteId, gateId: gate.id, type: 'ENTRY_DENIED', url: '/notifications' }, channels: ['in_app'] });
+        const host = await this.prisma.user.findUnique({ where: { id: fresh.invite.hostId }, select: { email: true, fullName: true } });
+        if (host?.email) await this.mail.sendHostVisitorUpdate({ to: host.email, hostName: host.fullName, guestName: name, purpose: fresh.invite.purpose, event: 'denied', reason: `${gate.name}: ${o.notes}`, at: new Date().toISOString(), organisationId: fresh.invite.organisationId }).catch(() => {});
+      } else if (o.direction === 'ENTRY' && fresh.status === VisitStatus.ARRIVED && o.prevStatus !== VisitStatus.ARRIVED) {
+        const host = await this.prisma.user.findUnique({ where: { id: fresh.invite.hostId }, select: { id: true, phone: true, email: true, fullName: true } });
+        if (host) {
+          const channels: Array<'in_app' | 'sms' | 'whatsapp'> = ['in_app'];
+          if (process.env.SMS_PROVIDER && process.env.SMS_PROVIDER !== 'log' && host.phone) channels.push('sms');
+          if (process.env.WHATSAPP_PROVIDER && process.env.WHATSAPP_PROVIDER !== 'log' && host.phone) channels.push('whatsapp');
+          await this.notifications.create({ userId: host.id, title: 'Visitor Arrived', body: `${name} has passed ${gate.name}, completed all checkpoints and entered the premises.`, meta: { visitorId, inviteId: fresh.inviteId, gateId: gate.id, type: 'HOST_ARRIVAL_CONFIRMATION', requiresHostResponse: true, url: '/notifications' }, channels, phone: host.phone || undefined });
+          if (host.email) await this.mail.sendHostVisitorUpdate({ to: host.email, hostName: host.fullName, guestName: name, purpose: fresh.invite.purpose, event: 'arrival', at: fresh.enteredAt?.toISOString(), organisationId: fresh.invite.organisationId }).catch(() => {});
+        }
+      } else if (o.direction === 'EXIT' && fresh.status === VisitStatus.EXITED && o.prevStatus !== VisitStatus.EXITED) {
+        await this.hostEvents.visitorEvent(visitorId, { type: 'VISITOR_EXITED', title: 'Visitor left', body: `${name} passed ${gate.name} and has left the premises${viaLinked}.`, meta: { gateId: gate.id }, email: 'none' });
+        const host = await this.prisma.user.findUnique({ where: { id: fresh.invite.hostId }, select: { email: true, fullName: true } });
+        if (host?.email) await this.mail.sendHostVisitorUpdate({ to: host.email, hostName: host.fullName, guestName: name, purpose: fresh.invite.purpose, event: 'exit', at: (fresh.exitedAt || new Date()).toISOString(), organisationId: fresh.invite.organisationId }).catch(() => {});
+      } else {
+        const next = await this.prisma.gate.findFirst({
+          where: { locationId: gate.locationId, isActive: true, sequence: o.direction === 'EXIT' ? { lt: gate.sequence } : { gt: gate.sequence } },
+          orderBy: { sequence: o.direction === 'EXIT' ? 'desc' : 'asc' },
+          select: { name: true, groupName: true },
+        });
+        if (next?.groupName) next.name = next.groupName;
+        const verb = o.direction === 'EXIT' ? 'on the way out' : 'on the way in';
+        const body = `${name} passed ${gate.name} ${verb}${next ? ` · next: ${next.name}` : ''}${viaLinked}.`;
+        await this.hostEvents.visitorEvent(visitorId, { type: o.direction === 'EXIT' ? 'CHECKPOINT_EXIT_PASSED' : 'CHECKPOINT_PASSED', title: `${name} passed ${gate.name}`, body, emailLine: `passed ${gate.name} ${verb}${next ? ` (next: ${next.name})` : ''}`, meta: { gateId: gate.id, direction: o.direction }, email: 'digest' });
+      }
+      if (o.withheld.length) {
+        await this.hostEvents.visitorEvent(visitorId, { type: 'ITEM_WITHHELD', title: 'Item withheld at the gate', body: `${gate.name} is holding ${o.withheld.join(', ')} for ${name}. It is returned on the way out.`, meta: { gateId: gate.id }, email: 'now' });
+      }
+    } catch {
+      /* notifications never undo a checkpoint */
+    }
+  }
+
+
+}

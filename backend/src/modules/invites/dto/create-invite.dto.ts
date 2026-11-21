@@ -1,0 +1,109 @@
+import {
+  IsString,
+  IsInt,
+  Min,
+  Max,
+  IsArray,
+  IsOptional,
+  IsEnum,
+  IsBoolean,
+  ValidateNested,
+  IsEmail,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { EntryMode, InviteCategory } from '@prisma/client';
+
+export class GuestInputDto {
+  @ApiProperty()
+  @IsString()
+  fullName: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  address?: string;
+}
+
+export class CreateInviteDto {
+  @ApiProperty({ example: 'Meeting with procurement team' })
+  @IsString()
+  purpose: string;
+
+  @ApiPropertyOptional({ enum: InviteCategory, default: InviteCategory.OFFICIAL })
+  @IsOptional()
+  @IsEnum(InviteCategory)
+  category?: InviteCategory;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  guestCount?: number;
+
+  /** @deprecated use guests[] */
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  guestNames?: string[];
+
+  @ApiPropertyOptional({ type: [GuestInputDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => GuestInputDto)
+  guests?: GuestInputDto[];
+
+  @ApiPropertyOptional({ enum: EntryMode })
+  @IsOptional()
+  @IsEnum(EntryMode)
+  expectedMode?: EntryMode;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  isOffline?: boolean;
+
+  @ApiPropertyOptional({ description: 'ISO date-time when visit is expected' })
+  @IsOptional()
+  @IsString()
+  expectedAt?: string;
+
+  @ApiPropertyOptional({ description: 'Plate number (vehicle / motorcycle)' })
+  @IsOptional()
+  @IsString()
+  vehiclePlate?: string;
+
+  @ApiPropertyOptional({ description: 'Additional details, e.g. colour and brand' })
+  @IsOptional()
+  @IsString()
+  vehicleDetails?: string;
+
+  /** v32 paper request: host without an account (admins only). Alerts go to the admin who creates it. */
+  @ApiPropertyOptional({ description: 'Host name (no account)' })
+  @IsOptional()
+  @IsString()
+  hostName?: string;
+
+  @ApiPropertyOptional({ description: 'Host phone (no account) — stored for SMS later' })
+  @IsOptional()
+  @IsString()
+  hostPhone?: string;
+
+  @ApiPropertyOptional({ description: 'Host office / department (no account)' })
+  @IsOptional()
+  @IsString()
+  hostOffice?: string;
+}

@@ -1,0 +1,175 @@
+import { Controller, Post, Get, Patch, Body, Param, Query, UseGuards, UploadedFile, UseInterceptors, Res, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { Response } from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { GateService } from './gate.service';
+import { GatePassService } from './gate-pass.service';
+import { EntryDto } from './dto/entry.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Role } from '@prisma/client';
+
+@ApiTags('Gate')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.ADMIN, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+@Controller('gate')
+export class GateController {
+  constructor(private gateService: GateService, private passes: GatePassService) {}
+
+  // ----- v22 gate pass protocol -----
+  @Get('pass-protocol')
+  @ApiOperation({ summary: 'Platform-wide gate pass protocol (PLAIN_TAGS | PRINTED_PASS | NONE)' })
+  passProtocol() { return this.passes.summary(); }
+
+  @Patch('pass-protocol')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Super Admin: choose the gate pass protocol' })
+  setPassProtocol(@CurrentUser() user: any, @Body() body: { protocol?: string }) { return this.passes.setProtocol(user, String(body?.protocol || '')); }
+
+  @Post('pass-items')
+  @ApiOperation({ summary: 'Record a tag issued / printed pass issued for a guest at a gate' })
+  issuePassItem(@CurrentUser() user: any, @Body() body: any) { return this.passes.issue(user, body || {}); }
+
+  @Get('pass-items/outstanding')
+  outstandingPassItems(@CurrentUser() user: any, @Query('gateId') gateId?: string) { return this.passes.outstanding(user, gateId || undefined); }
+
+  @Post('pass-items/for-visitors')
+  async passItemsForVisitors(@CurrentUser() user: any, @Body() body: { visitorIds?: string[] }) {
+    const ids = Array.isArray(body?.visitorIds) ? body.visitorIds.map(String).slice(0, 500) : [];
+    const visible = await this.gateService.visibleVisitorIds(user, ids);
+    const map = await this.passes.itemsForVisitors(visible);
+    return Object.fromEntries(map);
+  }
+
+  @Patch('pass-items/:id')
+  @ApiOperation({ summary: 'Mark a tag / pass RETURNED or LOST (reason required for lost)' })
+  closePassItem(@CurrentUser() user: any, @Param('id') id: string, @Body() body: { status?: string; reason?: string }) { return this.passes.close(user, id, body || {}); }
+
+  @Post('passes/preview')
+  previewPasses(@CurrentUser() user: any, @Body() body: { visitorIds?: string[] }) { return this.passes.preview(user, Array.isArray(body?.visitorIds) ? body.visitorIds : []); }
+
+  @Post('passes/pdf')
+  @ApiOperation({ summary: 'CR80 pass PDF, one page per guest (bulk print / download)' })
+  async passesPdf(@CurrentUser() user: any, @Body() body: { visitorIds?: string[]; mode?: string; destination?: string }, @Res() res: Response) {
+    const { buffer, filename } = await this.passes.pdf(user, body || {});
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${body?.mode === 'download' ? 'attachment' : 'inline'}; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buffer);
+  }
+
+  @Get('checkpoints')
+  checkpoints(@CurrentUser() user: any) { return this.gateService.listCheckpoints(user); }
+
+  @Post('particular-image')
+  @UseInterceptors(FileInterceptor('image', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async uploadParticularImage(@UploadedFile() file: Express.Multer.File) {
+    if (!file || file.mimetype !== 'image/webp') throw new BadRequestException('Checkpoint evidence must be captured and converted to WebP (max 5MB)');
+    const dir = path.join(process.env.PHOTO_STORAGE_PATH || '/data/photos', 'particulars');
+    fs.mkdirSync(dir, { recursive: true });
+    const filename = `${uuidv4()}.webp`;
+    fs.writeFileSync(path.join(dir, filename), file.buffer);
+    return { imagePath: `/visitors/particulars/${filename}` };
+  }
+
+  @Post('visitors/:id/mark-exited')
+  @ApiOperation({ summary: 'v32: mark a guest exited by hand (forgot to scan out)' })
+  markExited(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.gateService.markExited(id, user, body || {});
+  }
+
+  @Get('lookup')
+  @ApiOperation({ summary: 'Lookup visitor by passphrase or QR payload' })
+  lookup(@Query('code') code: string, @CurrentUser() user: any, @Query('atGateId') atGateId?: string) {
+    // v31: atGateId = the officer's station; a personal scan there tells the host "reached <gate>".
+    return this.gateService.lookup(code, user, atGateId);
+  }
+
+  @Get('visits')
+  @ApiOperation({ summary: 'List visits for gate dashboard' })
+  visits(@CurrentUser() user: any, @Query('filter') filter?: string, @Query('q') q?: string) {
+    return this.gateService.listVisits(user, filter, q);
+  }
+
+  @Patch('host-response/:visitorId')
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @ApiOperation({ summary: 'Host confirms availability or asks a visitor to wait' })
+  hostResponse(@Param('visitorId') visitorId: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.gateService.respondHostAvailability(visitorId, body, user);
+  }
+
+  @Post('host-prompt/:visitorId')
+  @ApiOperation({ summary: 'Gate officer requests an updated host availability response' })
+  promptHost(@Param('visitorId') visitorId: string, @CurrentUser() user: any) {
+    return this.gateService.requestHostAvailability(visitorId, user);
+  }
+
+  @Post('visitors/:visitorId/gate-photo')
+  @ApiOperation({ summary: 'Gate takes a live photo of a guest without email/phone' })
+  @UseInterceptors(FileInterceptor('photo', { storage: memoryStorage(), limits: { fileSize: 6 * 1024 * 1024 } }))
+  gatePhoto(@Param('visitorId') visitorId: string, @UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+    return this.gateService.uploadGatePhoto(visitorId, file, user);
+  }
+
+  @Post('identity-request')
+  @ApiOperation({ summary: 'Send gate photos to the host to confirm identity' })
+  identityRequest(@Body() body: { visitorIds: string[] }, @CurrentUser() user: any) {
+    return this.gateService.requestIdentityConfirmation(body?.visitorIds || [], user);
+  }
+
+  @Post('checkpoint')
+  @ApiOperation({ summary: 'Record a visitor checkpoint decision and inspection particulars' })
+  checkpoint(@Body() body: any, @CurrentUser() user: any) {
+    return this.gateService.recordCheckpoint(body, user);
+  }
+
+  @Post('particulars/:id/return')
+  returnParticular(@Param('id') id: string, @CurrentUser() user: any) { return this.gateService.returnParticular(id, user); }
+
+  @Post('particulars/:id/resolve')
+  @ApiOperation({ summary: 'Resolve a withheld particular as returned, seized, or other' })
+  resolveParticular(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.gateService.resolveParticular(id, user, body || {});
+  }
+
+  @Get('history/:visitorId')
+  history(@Param('visitorId') visitorId: string, @CurrentUser() user: any) {
+    return this.gateService.checkpointHistory(visitorId, user);
+  }
+
+  @Post('entry')
+  @ApiOperation({ summary: 'Record visitor entry' })
+  entry(@Body() dto: EntryDto, @CurrentUser() user: any) {
+    if (['GATE', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to record visitor entry');
+    return this.gateService.recordEntry(dto, user);
+  }
+
+  @Post('exit/:visitorId')
+  @ApiOperation({ summary: 'Record visitor exit' })
+  exit(
+    @Param('visitorId') visitorId: string,
+    @Body('notes') notes: string,
+    @CurrentUser() user: any,
+  ) {
+    if (user.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not gate operations');
+    return this.gateService.recordExit(visitorId, user, notes);
+  }
+
+  @Post('deny/:visitorId')
+  @ApiOperation({ summary: 'Decline visitor entry (requires comment)' })
+  deny(
+    @Param('visitorId') visitorId: string,
+    @Body('reason') reason: string,
+    @CurrentUser() user: any,
+  ) {
+    if (['GATE', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to deny visitor entry');
+    return this.gateService.denyEntry(visitorId, user, reason);
+  }
+}

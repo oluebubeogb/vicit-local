@@ -1,0 +1,158 @@
+'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Lock, Mail, ShieldCheck } from 'lucide-react';
+import { api, setToken, setUser } from '@/lib/api';
+import InstallBanner from '@/components/InstallBanner';
+import BrandMark from '@/components/BrandMark';
+import FooterCredit from '@/components/FooterCredit';
+import { Notice } from '@/components/ui/Bits';
+import { useBrand } from '@/components/BrandProvider';
+import { logoSrc } from '@/lib/brand';
+import LoginAgencyGrid from '@/components/LoginAgencyGrid';
+import PasswordInput from '@/components/ui/PasswordInput';
+
+export default function LoginPage() {
+  const router = useRouter();
+  const { brand } = useBrand();
+  const login = brand.login || {};
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const logo = login.logoUrl || null;
+  const showLogo = login.showLogo !== false && !!logo;
+  const logoWidth = login.logoWidth || '180px';
+  const watermark = login.watermarkUrl ? logoSrc(login.watermarkUrl, { fallback: false, version: brand.assetVersion }) : null;
+  const title = login.title || brand.name || 'Defence Headquarters';
+  const headline = login.headline && login.headline !== title ? login.headline : null;
+  const agencies = brand.agencies || [];
+  const mobileStatic = brand.footerCreditMobileMode === 'STATIC';
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.login(email, password);
+      setToken(data.accessToken);
+      setUser(data.user);
+      if (data.mustChangePassword || data.user?.mustChangePassword) {
+        router.replace('/change-password');
+        return;
+      }
+      if (data.user.role === 'SUPER_ADMIN' || data.user.role === 'GLOBAL_ADMIN') router.replace('/platform');
+      else if (data.user.role === 'GATE' || data.user.role === 'GLOBAL_GATE') router.replace('/gate');
+      else router.replace('/dashboard');
+    } catch (err: any) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="hero fixed inset-0 z-10 flex flex-col overflow-y-auto !rounded-none px-5 pb-16 pt-[max(2rem,env(safe-area-inset-top))] lg:px-12">
+      {watermark && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={watermark}
+            alt=""
+            className="max-w-none object-contain"
+            style={{
+              width: login.watermarkWidth || '70vw',
+              height: login.watermarkHeight || '70vh',
+              opacity: login.watermarkOpacity ?? 0.08,
+            }}
+          />
+        </span>
+      )}
+
+      <div className="relative mx-auto flex min-h-full w-full max-w-6xl flex-1 flex-col justify-center gap-10 py-8 lg:flex-row lg:items-center lg:justify-between lg:gap-16">
+        {agencies.length > 0 && (
+          <div className="hidden w-full max-w-lg flex-1 lg:block">
+            <LoginAgencyGrid agencies={agencies} variant="desktop" />
+          </div>
+        )}
+        <div className={`relative mx-auto w-full max-w-sm lg:mx-0 ${mobileStatic ? '' : 'pb-12'}`}>
+        <div className="animate-in mb-6">
+          <InstallBanner variant="login" />
+        </div>
+
+        {agencies.length > 0 && (
+          <div className="mb-5 lg:hidden">
+            <LoginAgencyGrid agencies={agencies} variant="mobile" />
+          </div>
+        )}
+
+        <div className="stagger mb-6 flex flex-col items-center text-center">
+          <h1 className="text-[26px] font-bold tracking-tight">{title}</h1>
+          <p className="mt-1 text-sm text-on-brand/70">Visitor Access & Exit Control</p>
+          {headline && <p className="mt-0.5 text-xs text-on-brand/60">{headline}</p>}
+        </div>
+
+        {showLogo && (
+          <div className="mb-5 flex justify-center">
+            <div className="relative">
+              <span className="absolute inset-0 animate-pulse-ring rounded-[26px]" />
+              <BrandMark
+                size={96}
+                width={logoWidth}
+                src={logoSrc(logo, { fallback: false, version: brand.assetVersion })}
+                alt={title}
+                className="animate-float !bg-white/95"
+              />
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="animate-in relative overflow-hidden rounded-[28px] border border-white/60 bg-white/95 p-6 text-slate-900 shadow-[0_30px_80px_-30px_rgb(2_6_23/0.7)] ring-1 ring-slate-200/80 backdrop-blur-xl">
+          <div className="art-dots !opacity-[0.04]" />
+          <h2 className="text-lg font-bold">Welcome back</h2>
+          <p className="mb-5 text-sm text-slate-500">Sign in to continue</p>
+          <div className="space-y-4">
+            <label className="block">
+              <span className="label">Email</span>
+              <span className="relative block">
+                <Mail size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" placeholder="you@organisation.com" className="input pl-10" required />
+              </span>
+            </label>
+            <label className="block">
+              <span className="label">Password</span>
+              <PasswordInput icon={<Lock size={17} />} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" placeholder="Enter password" required />
+            </label>
+
+            {error && <Notice tone="error">{error}</Notice>}
+
+            <button type="submit" disabled={loading} className="btn-primary w-full !py-3.5 text-base">
+              {loading ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-on-brand/40 border-t-on-brand" /> Signing in…
+                </>
+              ) : (
+                'Sign in'
+              )}
+            </button>
+          </div>
+        </form>
+        <p className="mt-6 flex items-center justify-center gap-1.5 text-xs text-on-brand/60">
+          <ShieldCheck size={13} /> Secured, encrypted access
+        </p>
+        {mobileStatic && <FooterCredit light className="mt-8 !text-on-brand/55" />}
+      </div>
+      </div>
+      {!mobileStatic && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <FooterCredit light className="pointer-events-auto !text-on-brand/55" />
+        </div>
+      )}
+    </div>
+  );
+}

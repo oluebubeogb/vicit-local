@@ -1,0 +1,669 @@
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { PrismaService } from '../../common/prisma/prisma.service';
+
+export type MailBrand = {
+  name: string;
+  appName: string;
+  color: string;
+  color2: string;
+  onColor: string;
+  url: string;
+  iconBg: string;
+  logoPath: string;
+};
+
+/** Escape user-provided text before it goes into email HTML. */
+function esc(v: unknown): string {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtWhen(iso?: string | null) {
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleString('en-GB', {
+    timeZone: process.env.APP_TIMEZONE || 'Africa/Lagos',
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** Mix a hex colour with white (amount 0..1) — for email-safe light tints. */
+function tint(hex: string, amount: number) {
+  const m = hex.replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return '#f1f5f9';
+  const c = m.slice(1).map((x) => parseInt(x, 16));
+  const out = c.map((v) => Math.round(v + (255 - v) * amount));
+  return '#' + out.map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+
+function mailHexRgb(hex?: string | null): [number, number, number] | null {
+  if (!hex) return null;
+  let h = String(hex).trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9a-f]{6}$/i.test(h)) return null;
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+function mailLum(rgb: [number, number, number]) {
+  const lin = rgb.map((c) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
+function mailContrast(a: [number, number, number], b: [number, number, number]) {
+  const l1 = mailLum(a);
+  const l2 = mailLum(b);
+  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** White or slate-900, whichever contrasts better with the brand background. */
+function autoOnPrimary(bg?: string | null): string {
+  const rgb = mailHexRgb(bg) || [37, 99, 235];
+  const white = mailContrast(rgb, [255, 255, 255]);
+  const dark = mailContrast(rgb, [15, 23, 42]);
+  return white >= dark ? '#ffffff' : '#0f172a';
+}
+
+function resolveOnColor(bg?: string | null, explicit?: string | null): string {
+  const rgb = mailHexRgb(explicit);
+  if (rgb) return '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
+  return autoOnPrimary(bg);
+}
+
+function rgba(hex: string, a: number) {
+  const rgb = mailHexRgb(hex) || [255, 255, 255];
+  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
+}
+
+function isLightBrand(hex?: string | null) {
+  const rgb = mailHexRgb(hex);
+  return rgb ? mailLum(rgb) >= 0.82 : false;
+}
+
+const FONT =
+  "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+
+@Injectable()
+export class MailService {
+  private readonly logger = new Logger(MailService.name);
+
+  constructor(@Optional() private prisma?: PrismaService) {}
+
+  private enabled() {
+    return Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM);
+  }
+
+  /**
+   * Branding for emails comes from Branding & Settings (organisation name, logo, colours,
+   * email icon background), falling back field-by-field to the environment defaults.
+   */
+  async brand(organisationId?: string): Promise<MailBrand> {
+    let org: any = null;
+    let platform: any = null;
+    try {
+      if (this.prisma && organisationId) org = await this.prisma.organisation.findUnique({ where: { id: organisationId } });
+      if (this.prisma) {
+        const root = await this.prisma.user.findFirst({ where: { role: 'SUPER_ADMIN' }, select: { organisationId: true } });
+        if (root?.organisationId && root.organisationId !== organisationId) platform = await this.prisma.organisation.findUnique({ where: { id: root.organisationId } });
+      }
+    } catch {
+      org = org || null;
+      platform = platform || null;
+    }
+    const emailDomain = org?.customDomain || platform?.customDomain;
+    const frontend = emailDomain
+      ? `https://${String(emailDomain).replace(/^https?:\/\//, '').replace(/\/+$/, '')}`
+      : (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+    const api = (process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+    let logo = org?.logoUrl || platform?.logoUrl || '';
+    if (logo && !/^https?:\/\//i.test(logo)) logo = api ? `${api}${logo}` : (process.env.EMAIL_LOGO_URL || '');
+    if (!logo) logo = process.env.EMAIL_LOGO_URL || (frontend ? `${frontend}/icon-192.png` : '');
+    const color = org?.primaryColor && String(org.primaryColor).toLowerCase() !== '#2563eb' ? org.primaryColor : platform?.primaryColor || org?.primaryColor || process.env.EMAIL_BRAND_COLOR || '#2563eb';
+    const inheritsPrimary = !(org?.primaryColor && String(org.primaryColor).toLowerCase() !== '#2563eb');
+    const explicitOn = org?.primaryTextColor || (inheritsPrimary ? platform?.primaryTextColor : null);
+    return {
+      name: org?.name || platform?.name || process.env.ORGANIZATION || process.env.NEXT_PUBLIC_APP_NAME || 'Vicit Llog',
+      appName: process.env.NEXT_PUBLIC_APP_NAME || 'Vicit Llog',
+      color,
+      color2: org?.secondaryColor && String(org.secondaryColor).toLowerCase() !== '#1e40af' ? org.secondaryColor : platform?.secondaryColor || org?.secondaryColor || process.env.EMAIL_BRAND_COLOR_2 || '#1e40af',
+      onColor: resolveOnColor(color, explicitOn),
+      url: frontend,
+      iconBg: org?.emailIconBg && String(org.emailIconBg).toLowerCase() !== '#ffffff' ? org.emailIconBg : platform?.emailIconBg || org?.emailIconBg || process.env.EMAIL_ICON_BG || '#ffffff',
+      logoPath: logo,
+    };
+  }
+
+  // ------------------------------------------------------------------ building blocks
+
+  /** Full email shell: table layout, inline styles, light-mode only, hidden preheader. */
+  layout(b: MailBrand, title: string, bodyHtml: string, preheader = '') {
+    const logoBlock = b.logoPath
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto 14px;">
+           <tr><td bgcolor="${b.iconBg}" style="background:${b.iconBg};border-radius:18px;padding:8px;box-shadow:0 6px 18px rgba(15,23,42,0.18);">
+             <img src="${esc(b.logoPath)}" alt="" width="52" height="52" style="display:block;width:52px;height:52px;border:0;border-radius:12px;object-fit:contain;" />
+           </td></tr>
+         </table>`
+      : '';
+    const soft = tint(b.color, 0.94);
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="color-scheme" content="light"/><meta name="supported-color-schemes" content="light"/>
+<title>${esc(title)}</title>
+<style>
+  :root { color-scheme: light; supported-color-schemes: light; }
+  @media (max-width:600px){ .px{padding-left:20px !important;padding-right:20px !important;} .h1{font-size:22px !important;} }
+  a { color:${b.color}; }
+</style></head>
+<body style="margin:0;padding:0;background:#eef2f7;font-family:${FONT};-webkit-font-smoothing:antialiased;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">${esc(preheader || title)}&#8203;&#8203;&#8203;&#8203;&#8203;&#8203;</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#eef2f7"
+    style="background:#eef2f7;background-image:linear-gradient(180deg,${soft} 0%,#eef2f7 55%,#f8fafc 100%);padding:36px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
+        <tr><td bgcolor="${b.color}" style="background:${b.color};background-image:linear-gradient(135deg,${b.color} 0%,${b.color2} 100%);border-radius:24px 24px 0 0;padding:34px 32px 30px;text-align:center;${isLightBrand(b.color) ? 'border:1px solid #cbd5e1;' : ''}">
+          ${logoBlock}
+          <div style="font-size:21px;font-weight:700;color:${b.onColor};letter-spacing:-0.01em;">${esc(b.name)}</div>
+          <div style="font-size:12px;color:${rgba(b.onColor, 0.82)};margin-top:6px;letter-spacing:0.14em;text-transform:uppercase;">Visitor Access</div>
+        </td></tr>
+        <tr><td bgcolor="#ffffff" class="px" style="background:#ffffff;padding:34px 36px 30px;color:#0f172a;font-size:15px;line-height:1.65;border-left:1px solid #e6ebf2;border-right:1px solid #e6ebf2;">
+          ${bodyHtml}
+        </td></tr>
+        <tr><td bgcolor="#f8fafc" style="background:#f8fafc;border:1px solid #e6ebf2;border-top:0;border-radius:0 0 24px 24px;padding:18px 32px 22px;text-align:center;">
+          <div style="font-size:12px;color:#64748b;">${esc(b.name)} · secured by ${esc(b.appName)}</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px;">This is an automated message — please do not reply.</div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+  }
+
+  private heading(b: MailBrand, eyebrow: string, title: string) {
+    return `<div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${b.color};margin:0 0 6px;">${esc(eyebrow)}</div>
+      <div class="h1" style="font-size:24px;font-weight:700;letter-spacing:-0.02em;color:#0f172a;line-height:1.25;margin:0 0 14px;">${esc(title)}</div>`;
+  }
+
+  private btn(b: MailBrand, href: string, label: string) {
+    const light = isLightBrand(b.color);
+    const btnShadow = light ? '0 0 0 1px #cbd5e1, 0 8px 20px rgba(15,23,42,0.14)' : `0 8px 20px ${tint(b.color, 0.55)}`;
+    return `<table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:26px auto 10px;">
+      <tr><td bgcolor="${b.color}" style="background:${b.color};background-image:linear-gradient(135deg,${b.color} 0%,${b.color2} 100%);border-radius:14px;box-shadow:${btnShadow};">
+        <a href="${esc(href)}" style="display:inline-block;padding:15px 30px;color:${b.onColor};text-decoration:none;font-weight:600;font-size:15px;font-family:${FONT};">${esc(label)} &rarr;</a>
+      </td></tr>
+    </table>`;
+  }
+
+  private codeBox(b: MailBrand, label: string, value: string, hint = '') {
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;">
+      <tr><td bgcolor="${tint(b.color, 0.95)}" style="background:${tint(b.color, 0.95)};border:1px dashed ${tint(b.color, 0.6)};border-radius:16px;padding:16px 18px;text-align:center;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.12em;color:#64748b;margin-bottom:6px;">${esc(label)}</div>
+        <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:22px;font-weight:700;letter-spacing:0.14em;color:#0f172a;">${esc(value)}</div>
+        ${hint ? `<div style="font-size:12px;color:#94a3b8;margin-top:6px;">${esc(hint)}</div>` : ''}
+      </td></tr>
+    </table>`;
+  }
+
+  /** Key/value summary card with a brand accent bar. */
+  private facts(b: MailBrand, rows: Array<[string, string | null | undefined]>) {
+    const body = rows
+      .filter(([, v]) => v)
+      .map(
+        ([k, v], i) => `<tr><td style="padding:${i ? '10px' : '0'} 0 0;">
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.08em;">${esc(k)}</div>
+          <div style="font-size:15px;font-weight:600;color:#0f172a;margin-top:2px;">${esc(v)}</div>
+        </td></tr>`,
+      )
+      .join('');
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 4px;">
+      <tr>
+        <td width="4" bgcolor="${b.color}" style="background:${b.color};border-radius:4px;"></td>
+        <td bgcolor="#f8fafc" style="background:#f8fafc;border-radius:0 14px 14px 0;padding:14px 18px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${body}</table>
+        </td>
+      </tr>
+    </table>`;
+  }
+
+  private p(text: string, muted = false) {
+    return `<p style="margin:0 0 14px;color:${muted ? '#64748b' : '#334155'};">${text}</p>`;
+  }
+
+  // ------------------------------------------------------------------ transport
+
+  async sendMail(opts: {
+    to: string;
+    subject: string;
+    text: string;
+    html?: string;
+    attachments?: Array<{
+      filename?: string;
+      content?: Buffer | string;
+      path?: string;
+      cid?: string;
+      contentType?: string;
+      encoding?: string;
+      contentDisposition?: 'inline' | 'attachment';
+    }>;
+  }) {
+    if (!opts.to) {
+      this.logger.warn('sendMail skipped: no recipient');
+      return { ok: false, error: 'no recipient' };
+    }
+    if (!this.enabled()) {
+      this.logger.log(`[mail:disabled] SMTP_HOST/SMTP_FROM not set — skipped mail to=${opts.to} subject=${opts.subject}`);
+      return { ok: false, error: 'SMTP not configured' };
+    }
+    const b = opts.html ? null : await this.brand();
+    const payload = {
+      from: process.env.SMTP_FROM,
+      to: opts.to,
+      subject: opts.subject,
+      text: opts.text,
+      html:
+        opts.html ||
+        this.layout(b as MailBrand, opts.subject, `<p>${esc(opts.text).replace(/\n/g, '<br/>')}</p>`),
+      attachments: opts.attachments || [],
+    };
+    // Bulk enrolment sends many messages back to back. Reuse one pooled SMTP connection and
+    // retry transient failures (rate limits, 421/45x, dropped sockets) so no welcome email is lost.
+    const attempts = Math.max(1, parseInt(process.env.SMTP_RETRIES || '3', 10) || 3);
+    let lastError = '';
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const info = await this.transport().sendMail(payload);
+        this.logger.log(`Mail sent to ${opts.to} id=${info.messageId}${attempt > 1 ? ` (attempt ${attempt})` : ''}`);
+        return { ok: true, id: info.messageId };
+      } catch (e: any) {
+        lastError = e?.message || String(e);
+        this.logger.warn(`Mail attempt ${attempt}/${attempts} to ${opts.to} failed: ${lastError}`);
+        // Drop a broken pooled connection so the next attempt opens a fresh one.
+        try { this.transporter?.close?.(); } catch { /* ignore */ }
+        this.transporter = null;
+        if (attempt < attempts) await new Promise((r) => setTimeout(r, 800 * attempt * attempt));
+      }
+    }
+    this.logger.error(`Mail failed: ${lastError}`);
+    return { ok: false, error: lastError };
+  }
+
+  private transporter: any = null;
+
+  private transport() {
+    if (this.transporter) return this.transporter;
+    const nodemailer = require('nodemailer');
+    this.transporter = nodemailer.createTransport({
+      pool: true,
+      maxConnections: 1,
+      maxMessages: 50,
+      rateDelta: 1000,
+      rateLimit: Math.max(1, parseInt(process.env.SMTP_RATE_PER_SECOND || '3', 10) || 3),
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: process.env.SMTP_USER
+        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS || '' }
+        : undefined,
+    });
+    return this.transporter;
+  }
+
+  /** Whether outgoing mail is configured (SMTP_HOST + SMTP_FROM). */
+  isEnabled() {
+    return this.enabled();
+  }
+
+  /**
+   * Generic branded notice: cancellations, postponements, reminders, identity confirmations.
+   * Paragraph strings are escaped here.
+   */
+  async sendNotice(opts: {
+    to: string;
+    organisationId?: string;
+    subject: string;
+    eyebrow: string;
+    title: string;
+    paragraphs: string[];
+    facts?: Array<[string, string | null | undefined]>;
+    button?: { href: string; label: string } | null;
+    preheader?: string;
+  }) {
+    const b = await this.brand(opts.organisationId);
+    const subject = `${b.name} — ${opts.subject}`;
+    const text = [opts.title, '', ...opts.paragraphs, '', ...(opts.facts || []).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`), opts.button ? `${opts.button.label}: ${opts.button.href}` : '']
+      .filter((l) => l !== undefined)
+      .join('\n');
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, opts.eyebrow, opts.title)}
+      ${opts.paragraphs.map((t) => this.p(esc(t))).join('')}
+      ${opts.facts?.length ? this.facts(b, opts.facts) : ''}
+      ${opts.button ? this.btn(b, opts.button.href, opts.button.label) : ''}`,
+      opts.preheader || opts.title,
+    );
+    return this.sendMail({ to: opts.to, subject, text, html });
+  }
+
+  /** Format a date/time in APP_TIMEZONE (default Africa/Lagos) for emails and notifications. */
+  when(iso?: string | Date | null) {
+    return fmtWhen(iso ? new Date(iso).toISOString() : null);
+  }
+
+  // ------------------------------------------------------------------ templates
+
+  async sendWelcome(to: string, fullName: string, tempPassword: string, loginUrl?: string, organisationId?: string) {
+    const b = await this.brand(organisationId);
+    const url = loginUrl || (b.url ? `${b.url}/login` : '');
+    const subject = `Welcome to ${b.name} — your login details`;
+    const text = [
+      `Hello ${fullName},`,
+      ``,
+      `Your staff account has been created.`,
+      `Email: ${to}`,
+      `Temporary password: ${tempPassword}`,
+      url ? `Sign in: ${url}` : '',
+      `Change this password on first sign-in.`,
+    ]
+      .filter((l) => l !== null)
+      .join('\n');
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, 'Welcome aboard', `Hello ${fullName}`)}
+      ${this.p(`Your <strong>${esc(b.name)}</strong> staff account is ready. Sign in with the temporary password below, then choose your own.`)}
+      ${this.facts(b, [['Sign-in email', to]])}
+      ${this.codeBox(b, 'Temporary password', tempPassword, 'You will be asked to change it on first sign-in')}
+      ${url ? this.btn(b, url, 'Sign in') : ''}
+      ${this.p('Never share this password. Our team will never ask you for it.', true)}`,
+      'Your staff account is ready — sign in and set your password.',
+    );
+    return this.sendMail({ to, subject, text, html });
+  }
+
+  async sendPasswordReset(to: string, fullName: string, tempPassword: string, loginUrl?: string, organisationId?: string) {
+    const b = await this.brand(organisationId);
+    const url = loginUrl || (b.url ? `${b.url}/login` : '');
+    const subject = `${b.name} — password reset`;
+    const text = [
+      `Hello ${fullName},`,
+      `Your password was reset by an administrator.`,
+      `New temporary password: ${tempPassword}`,
+      url ? `Sign in: ${url}` : '',
+      `Change it on next sign-in.`,
+    ].join('\n');
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, 'Security', 'Your password was reset')}
+      ${this.p(`Hello <strong>${esc(fullName)}</strong>, an administrator issued you a new temporary password.`)}
+      ${this.codeBox(b, 'New temporary password', tempPassword, 'Set a new password right after signing in')}
+      ${url ? this.btn(b, url, 'Sign in & change password') : ''}
+      ${this.p('If you did not expect this, contact your administrator immediately.', true)}`,
+      'An administrator reset your password.',
+    );
+    return this.sendMail({ to, subject, text, html });
+  }
+
+  async sendInviteEmail(opts: {
+    to: string;
+    guestName: string;
+    hostName: string;
+    purpose: string;
+    link: string;
+    passphrase: string;
+    ttlMinutes: number;
+    expectedAt?: string | null;
+    orgName?: string;
+    organisationId?: string;
+  }) {
+    const b = await this.brand(opts.organisationId);
+    const subject = `${b.name} — You're invited: ${opts.purpose}`;
+    const when = opts.expectedAt ? fmtWhen(opts.expectedAt) : null;
+    const text = [
+      `Hello ${opts.guestName},`,
+      `You have been invited by ${opts.hostName}.`,
+      `Purpose: ${opts.purpose}`,
+      when ? `When: ${when}` : '',
+      `Register here: ${opts.link}`,
+      `Gate passphrase: ${opts.passphrase}`,
+      `Link expires in ${opts.ttlMinutes} minutes.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, 'Visitor invitation', `Hello ${opts.guestName}`)}
+      ${this.p(`<strong>${esc(opts.hostName)}</strong>${opts.orgName ? ` at ${esc(opts.orgName)}` : ''} has invited you. Register in under a minute — take a quick photo and you will receive your gate QR code.`)}
+      ${this.facts(b, [
+        ['Purpose', opts.purpose],
+        ['Host', opts.hostName],
+        ['Date & time', when],
+      ])}
+      ${this.btn(b, opts.link, 'Complete registration')}
+      <p style="font-size:12px;color:#94a3b8;text-align:center;margin:0 0 6px;">Works on any phone or computer with a camera · link expires in ${esc(opts.ttlMinutes)} minutes</p>
+      ${this.codeBox(b, 'Gate passphrase (backup)', opts.passphrase, 'Tell the gate officer if your QR will not scan')}`,
+      `${opts.hostName} invited you — register to get your gate QR code.`,
+    );
+    return this.sendMail({ to: opts.to, subject, text, html });
+  }
+
+  async sendVisitorQrEmail(opts: {
+    to: string;
+    guestName: string;
+    hostName: string;
+    purpose: string;
+    passphrase: string;
+    /** Raw PNG bytes (preferred) */
+    qrPng?: Buffer;
+    /** Legacy: data:image/png;base64,... */
+    qrDataUrl?: string;
+    /** Public hosted PNG (fallback for clients that hide inline images) */
+    qrImageUrl?: string;
+    /** Visitor page link — QR is always shown there too */
+    registrationLink?: string;
+    orgName?: string;
+    organisationId?: string;
+    /** Descriptive attachment name, e.g. vicit-pass_ibe-okafor_2026-10-21.png */
+    qrFileName?: string;
+  }) {
+    const b = await this.brand(opts.organisationId);
+    const subject = `${b.name} — Your gate QR code: ${opts.purpose}`;
+    const fileName = opts.qrFileName || 'gate-qr.png';
+    const text = [
+      `Hello ${opts.guestName},`,
+      `Your photo registration is complete.`,
+      `Host: ${opts.hostName}`,
+      `Purpose: ${opts.purpose}`,
+      `Gate passphrase: ${opts.passphrase}`,
+      `Show the QR code in this email (attached as ${fileName}) or on your registration page at the gate.`,
+      opts.registrationLink ? `Your registration page (shows the QR): ${opts.registrationLink}` : '',
+      opts.qrImageUrl ? `QR image: ${opts.qrImageUrl}` : '',
+      `If the QR will not scan, tell the gate officer your passphrase.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    // Embed QR as a CID inline attachment — data: URIs are blocked by Gmail, Outlook and
+    // many mobile clients; CID images render in Apple Mail (iPhone), Gmail and Outlook.
+    let png: Buffer | null = opts.qrPng || null;
+    if (!png) {
+      const match = (opts.qrDataUrl || '').match(/^data:image\/png;base64,(.+)$/i);
+      if (match) png = Buffer.from(match[1], 'base64');
+    }
+    const attachments: any[] = png
+      ? [
+          {
+            filename: fileName,
+            content: png,
+            cid: 'visitor-qr@vicit',
+            contentType: 'image/png',
+            contentDisposition: 'inline',
+          },
+        ]
+      : [];
+
+    // The pass PNG carries a caption under the code, so keep its real aspect ratio.
+    const qrW = 240;
+    const qrH = png && png.length > 24 ? Math.round((qrW * png.readUInt32BE(20)) / png.readUInt32BE(16)) : qrW;
+    // White padded cell with bgcolor attr so dark-mode clients keep the QR on white.
+    const qrBlock = png
+      ? `<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:22px auto 10px;">
+          <tr><td bgcolor="${tint(b.color, 0.92)}" style="background:${tint(b.color, 0.92)};background-image:linear-gradient(135deg,${tint(b.color, 0.88)} 0%,${tint(b.color2, 0.93)} 100%);padding:10px;border-radius:24px;">
+            <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+              <td bgcolor="#ffffff" style="background:#ffffff;padding:14px;border-radius:16px;">
+                <img src="cid:visitor-qr@vicit" alt="Gate QR code" width="${qrW}" height="${qrH}"
+                  style="display:block;width:${qrW}px;height:${qrH}px;max-width:${qrW}px;background:#ffffff;border:0;outline:none;image-rendering:pixelated;" />
+              </td>
+            </tr></table>
+          </td></tr>
+        </table>`
+      : '';
+    const links: string[] = [];
+    if (opts.registrationLink) {
+      links.push(`<a href="${esc(opts.registrationLink)}" style="color:${b.color};font-weight:600;">open your registration page</a>`);
+    }
+    if (opts.qrImageUrl) {
+      links.push(`<a href="${esc(opts.qrImageUrl)}" style="color:${b.color};font-weight:600;">open the QR image</a>`);
+    }
+    const fallback = `<p style="text-align:center;color:#64748b;font-size:13px;margin:0 0 8px;">
+        ${png ? 'QR not showing?' : 'Your QR code is ready.'}
+        ${links.length ? ` You can ${links.join(' or ')}.` : ' Open your registration link to view it on your phone.'}
+        <br/>Tip: turn your screen brightness up at the gate.
+      </p>`;
+
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, 'You are all set', `See you soon, ${opts.guestName}`)}
+      ${this.p('Your photo is registered. Present this QR code at the gate when you arrive — the passphrase works as a backup.')}
+      ${qrBlock}
+      ${fallback}
+      ${this.codeBox(b, 'Gate passphrase', opts.passphrase)}
+      ${this.facts(b, [
+        ['Host', `${opts.hostName}${opts.orgName ? ` · ${opts.orgName}` : ''}`],
+        ['Purpose', opts.purpose],
+      ])}`,
+      'Your gate QR code is inside — show it on arrival.',
+    );
+    return this.sendMail({ to: opts.to, subject, text, html, attachments });
+  }
+
+  async sendHostVisitorUpdate(opts: {
+    to: string;
+    hostName: string;
+    guestName: string;
+    purpose: string;
+    event: 'photo' | 'arrival' | 'exit' | 'denied';
+    orgName?: string;
+    at?: string | null;
+    reason?: string;
+    organisationId?: string;
+  }) {
+    const b = await this.brand(opts.organisationId);
+    const labels = {
+      photo: { title: 'Guest photo captured', verb: 'completed photo registration', eyebrow: 'Registration', color: b.color },
+      arrival: { title: 'Visitor arrived', verb: 'has entered the premises', eyebrow: 'Arrival', color: '#059669' },
+      exit: { title: 'Visitor exited', verb: 'has left the premises', eyebrow: 'Departure', color: '#d97706' },
+      denied: { title: 'Visitor entry declined', verb: 'was declined at the gate', eyebrow: 'Entry declined', color: '#dc2626' },
+    };
+    const L = labels[opts.event];
+    const subject = `${b.name} — ${L.title}: ${opts.guestName}`;
+    const when = fmtWhen(opts.at);
+    const text = [
+      `Hello ${opts.hostName},`,
+      `${opts.guestName} ${L.verb}.`,
+      `Purpose: ${opts.purpose}`,
+      opts.reason ? `Reason: ${opts.reason}` : '',
+      `Time: ${when}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const html = this.layout(
+      b,
+      subject,
+      `<div style="display:inline-block;background:${tint(L.color, 0.9)};color:${L.color};font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:6px 12px;border-radius:999px;margin-bottom:12px;">${esc(L.eyebrow)}</div>
+      <div class="h1" style="font-size:22px;font-weight:700;letter-spacing:-0.02em;color:#0f172a;margin:0 0 12px;">${esc(opts.guestName)} ${esc(L.verb)}</div>
+      ${this.p(`Hello <strong>${esc(opts.hostName)}</strong>, here is the latest on your visitor.`, true)}
+      ${this.facts(b, [
+        ['Visitor', opts.guestName],
+        ['Purpose', opts.purpose],
+        ['Reason', opts.reason || null],
+        ['Time', when],
+      ])}
+      ${b.url ? this.btn(b, `${b.url}/notifications`, 'View in app') : ''}`,
+      `${opts.guestName} ${L.verb}.`,
+    );
+    return this.sendMail({ to: opts.to, subject, text, html });
+  }
+  async sendContractorCardEmail(opts: {
+    to: string;
+    fullName: string;
+    company?: string | null;
+    orgName?: string;
+    organisationId?: string;
+    validFrom: string;
+    validThrough: string;
+    qrPng: Buffer;
+    photoPng?: Buffer | null;
+  }) {
+    const b = await this.brand(opts.organisationId);
+    const subject = `${b.name} — Your contractor pass`;
+    const through = fmtWhen(opts.validThrough);
+    const from = fmtWhen(opts.validFrom);
+    const text = [
+      `Hello ${opts.fullName},`,
+      `Your contractor identification card is ready.`,
+      opts.company ? `Company: ${opts.company}` : '',
+      opts.orgName ? `Agency: ${opts.orgName}` : '',
+      `Valid from: ${from}`,
+      `Valid through: ${through}`,
+      `Show the attached barcode at the gate. Ask an administrator for a reprint if you need another copy.`,
+    ].filter(Boolean).join('\n');
+    const attachments: any[] = [
+      { filename: 'contractor-pass.png', content: opts.qrPng, cid: 'contractor-qr@vicit', contentType: 'image/png', contentDisposition: 'inline' },
+    ];
+    if (opts.photoPng) {
+      attachments.push({ filename: 'contractor-photo.jpg', content: opts.photoPng, cid: 'contractor-photo@vicit', contentType: 'image/jpeg', contentDisposition: 'inline' });
+    }
+    const photoCell = opts.photoPng
+      ? `<img src="cid:contractor-photo@vicit" alt="" width="88" height="88" style="display:block;width:88px;height:88px;border-radius:44px;object-fit:cover;border:3px solid #fff;" />`
+      : '';
+    const html = this.layout(
+      b,
+      subject,
+      `${this.heading(b, 'Your contractor pass', `Hello ${opts.fullName}`)}
+      ${this.p('Keep this card with you. The gate will scan the code on the left — it is valid through the date below.')}
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:18px 0;border-radius:20px;overflow:hidden;background:${tint(b.color, 0.92)};">
+        <tr>
+          <td width="48%" valign="middle" bgcolor="#ffffff" style="background:#ffffff;padding:16px;text-align:center;">
+            <img src="cid:contractor-qr@vicit" alt="Contractor barcode" width="200" height="200" style="display:block;margin:0 auto;width:200px;height:200px;background:#ffffff;" />
+          </td>
+          <td width="52%" valign="middle" style="padding:18px 16px;color:${b.onColor};">
+            ${photoCell}
+            <div style="font-size:18px;font-weight:700;margin:10px 0 4px;color:#0f172a;">${esc(opts.fullName)}</div>
+            <div style="font-size:13px;color:#334155;">${esc(opts.company || 'Contractor')}</div>
+            <div style="font-size:12px;color:#475569;margin-top:4px;">${esc(opts.orgName || b.name)}</div>
+            <div style="margin-top:12px;display:inline-block;background:#0f172a;color:#fff;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:6px 10px;border-radius:999px;">Valid through ${esc(through)}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:8px;">From ${esc(from)}</div>
+          </td>
+        </tr>
+      </table>`,
+      'Your contractor identification card is attached.',
+    );
+    return this.sendMail({ to: opts.to, subject, text, html, attachments });
+  }
+
+}

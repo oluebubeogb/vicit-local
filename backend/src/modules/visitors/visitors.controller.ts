@@ -1,0 +1,122 @@
+import {
+  Controller,
+  Post,
+  Get,
+  Param,
+  UseInterceptors,
+  UploadedFile,
+  Res,
+  Body,
+  BadRequestException,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { VisitorsService } from './visitors.service';
+import { Response } from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
+
+@ApiTags('Visitors')
+@Controller('visitors')
+export class VisitorsController {
+  constructor(private visitorsService: VisitorsService) {}
+
+  @Post(':token/:visitorId/photo')
+  @ApiOperation({ summary: 'Visitor uploads live passport-style photo' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        photo: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          return cb(new BadRequestException('Only image files allowed'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadPhoto(
+    @Param('token') token: string,
+    @Param('visitorId') visitorId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Photo file is required');
+    return this.visitorsService.uploadPhoto(token, visitorId, file);
+  }
+
+  @Post(':token/:visitorId/photo/preview')
+  @ApiOperation({ summary: 'v24: stage a photo for review — no QR until /photo/confirm' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', properties: { photo: { type: 'string', format: 'binary' } } } })
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          return cb(new BadRequestException('Only image files allowed'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  stagePhoto(
+    @Param('token') token: string,
+    @Param('visitorId') visitorId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Photo file is required');
+    return this.visitorsService.stagePhoto(token, visitorId, file);
+  }
+
+  @Post(':token/:visitorId/photo/confirm')
+  @ApiOperation({ summary: 'v24: "Proceed to QR code" — keep the reviewed photo, issue or re-send the QR' })
+  confirmPhoto(
+    @Param('token') token: string,
+    @Param('visitorId') visitorId: string,
+    @Body() body: { pendingId?: string },
+  ) {
+    return this.visitorsService.confirmPhoto(token, visitorId, String(body?.pendingId || ''));
+  }
+
+  @Get('qr/:token/:visitorId')
+  @ApiOperation({ summary: 'Public: gate QR code as PNG (append .png optional)' })
+  async getQr(
+    @Param('token') token: string,
+    @Param('visitorId') visitorId: string,
+    @Res() res: Response,
+  ) {
+    const id = visitorId.replace(/\.png$/i, '');
+    const { png, filename } = await this.visitorsService.getQrPng(token, id);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Length', String(png.length));
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    // ?download=1 forces a save dialog (visitor page "Download" button); default stays inline
+    const disposition = (res.req as any)?.query?.download ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.end(png);
+  }
+
+  @Get('particulars/:filename')
+  @ApiOperation({ summary: 'Serve an inspection particulars evidence image' })
+  getParticularImage(@Param('filename') filename: string, @Res() res: Response) {
+    if (!/^[a-f0-9-]+\.(jpg|png|webp)$/i.test(filename)) throw new BadRequestException('Invalid image name');
+    const filepath = path.join(process.env.PHOTO_STORAGE_PATH || '/data/photos', 'particulars', filename);
+    if (!fs.existsSync(filepath)) throw new BadRequestException('Image not found');
+    return res.sendFile(filepath);
+  }
+
+  @Get('photo/:filename')
+  @ApiOperation({ summary: 'Serve stored visitor photo' })
+  async getPhoto(@Param('filename') filename: string, @Res() res: Response) {
+    const filepath = await this.visitorsService.getPhoto(filename);
+    res.sendFile(filepath);
+  }
+}

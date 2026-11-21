@@ -1,0 +1,47 @@
+import { IsEmail, IsString, MinLength, IsEnum, IsOptional, IsObject, IsArray, ArrayMaxSize } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Role } from '@prisma/client';
+
+export class CreateUserDto {
+  @ApiProperty()
+  @IsEmail()
+  email: string;
+
+  // Password optional — system generates Nigerian word if omitted
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(5)
+  password?: string;
+
+  @ApiProperty()
+  @IsString()
+  fullName: string;
+
+  @ApiPropertyOptional({ enum: Role })
+  @IsOptional()
+  @IsEnum(Role)
+  role?: Role;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  portfolio?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Agency custom field values keyed by field key' })
+  @IsOptional()
+  @IsObject()
+  customFields?: Record<string, any>;
+
+  @ApiPropertyOptional({ description: 'Gate officers only: gates/checkpoints to assign on create', type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @IsString({ each: true })
+  gateIds?: string[];
+}

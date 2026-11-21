@@ -1,0 +1,887 @@
+'use client';
+
+import { ReactNode, useEffect, useRef, useState } from 'react';
+import { api, getUser } from '@/lib/api';
+import {
+  Bell,
+  Check,
+  Clock,
+  Globe,
+  ImagePlus,
+  Mail,
+  Palette,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Type,
+  LogIn,
+  Package,
+  ChevronUp,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  GripVertical,
+  Minus,
+  UserPlus,
+  IdCard,
+  Tag,
+} from 'lucide-react';
+import LoginAgencyGrid from '@/components/LoginAgencyGrid';
+import GatePassProtocolSetting from '@/components/GatePassProtocolSetting';
+import ProfileHeaderBuilder from '@/components/ProfileHeaderBuilder';
+import { mergeTemplates, type ProfileTemplates } from '@/lib/profileTemplate';
+import { ALL_MODES, resetEntryModesCache } from '@/lib/entry-modes';
+import SleekOverlay from '@/components/ui/SleekOverlay';
+import PageHeader from '@/components/ui/PageHeader';
+import { InfoTip } from '@/components/ui/Tooltip';
+import { Notice, SkeletonList } from '@/components/ui/Bits';
+import { useBrand } from '@/components/BrandProvider';
+import {
+  applyBranding,
+  autoOnPrimaryColor,
+  contrastRatio,
+  CONTRAST_MIN,
+  logoSrc,
+  resolveOnPrimaryColor,
+} from '@/lib/brand';
+
+const PRESETS = [
+  ['#2563eb', '#1e40af'],
+  ['#0f766e', '#134e4a'],
+  ['#7c3aed', '#4c1d95'],
+  ['#be123c', '#881337'],
+  ['#b45309', '#78350f'],
+  ['#0f172a', '#334155'],
+  ['#ffffff', '#e2e8f0'],
+];
+
+function Section({ icon, title, info, applies, children }: { icon: ReactNode; title: string; info: string; applies: string[]; children: ReactNode }) {
+  return (
+    <section className="surface animate-in space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/80 text-brand-600 shadow-sm ring-1 ring-brand-100">{icon}</span>
+        <h2 className="font-semibold text-slate-800">{title}</h2>
+        <InfoTip text={info} />
+      </div>
+      {children}
+      <div className="flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+        Applies to
+        {applies.map((a) => (
+          <span key={a} className="chip !py-0 !text-[10px]">
+            {a}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ColorField({ label, value, onChange, tip }: { label: string; value: string; onChange: (v: string) => void; tip: string }) {
+  return (
+    <label className="block">
+      <span className="label">
+        {label} <InfoTip text={tip} size={12} />
+      </span>
+      <span className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white/90 p-1.5 pr-3 transition hover:border-brand-200 focus-within:ring-4 focus-within:ring-brand-100">
+        <span className="relative h-9 w-9 shrink-0 overflow-hidden rounded-lg shadow-inner ring-1 ring-black/5" style={{ background: value }}>
+          <input type="color" value={value} onChange={(e) => onChange(e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label={label} />
+        </span>
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-transparent font-mono text-sm uppercase text-slate-700 outline-none"
+          maxLength={7}
+        />
+      </span>
+    </label>
+  );
+}
+
+function ThemeTextColorField({
+  primary,
+  value,
+  onChange,
+}: {
+  primary: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const auto = autoOnPrimaryColor(primary);
+  const isAuto = !value;
+  const current = value || auto;
+  const ratio = contrastRatio(primary, current);
+  const poor = ratio < CONTRAST_MIN;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1">
+          <ColorField
+            label="Theme text colour"
+            value={current}
+            onChange={(v) => onChange(v)}
+            tip="Colour of text, icons and chips that sit on the theme/brand background (buttons, heroes, theme cards). Other page text is unchanged."
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          className={`mb-0.5 shrink-0 rounded-xl border px-3 py-2.5 text-xs font-semibold transition ${
+            isAuto ? 'border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-200' : 'border-slate-200 bg-white text-slate-600 hover:border-brand-200'
+          }`}
+        >
+          Auto (contrast)
+        </button>
+      </div>
+      <div
+        className="overflow-hidden rounded-2xl"
+        style={{
+          background: `linear-gradient(135deg, ${primary}, ${primary})`,
+          color: current,
+          boxShadow: primary.toLowerCase() === '#ffffff' || ratio < 1.5 ? '0 0 0 1px rgb(15 23 42 / 0.16), 0 8px 24px -10px rgb(15 23 42 / 0.18)' : undefined,
+        }}
+      >
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ opacity: 0.75 }}>
+              Theme card preview
+            </p>
+            <p className="truncate text-sm font-bold">Your brand, your text</p>
+          </div>
+          <span className="rounded-lg px-2 py-1 text-[10px] font-semibold" style={{ background: current, color: primary, opacity: 0.95 }}>
+            {isAuto ? 'Auto' : current.toUpperCase()}
+          </span>
+        </div>
+      </div>
+      {poor && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Contrast is {ratio.toFixed(2)}:1 — below the 4.5:1 WCAG threshold. Text may be hard to read on this background.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function BrandingPage() {
+  const { brand, refresh } = useBrand();
+  const viewer = getUser();
+  const platformBack = viewer?.role === 'SUPER_ADMIN' || viewer?.role === 'GLOBAL_ADMIN' ? '/platform/tools' : '/admin';
+  const brandRef = useRef(brand);
+  brandRef.current = brand;
+  const [form, setForm] = useState({
+    name: '',
+    logoUrl: '',
+    primaryColor: '#2563eb',
+    secondaryColor: '#1e40af',
+    primaryTextColor: '',
+    emailIconBg: '#ffffff',
+    customDomain: '',
+    requireApproval: false,
+    requireDispatchHostApproval: false,
+    photoRetentionDays: 90,
+  });
+  const [initial, setInitial] = useState<typeof form | null>(null);
+  const isSa = viewer?.role === 'SUPER_ADMIN';
+  const [contractorMinDurationDays, setContractorMinDurationDays] = useState(1);
+  const [contractorMinDaysInitial, setContractorMinDaysInitial] = useState(1);
+  const [entryModes, setEntryModes] = useState<string[]>(['PEDESTRIAN', 'MOTORCYCLE', 'VEHICLE']);
+  const [entryModesInitial, setEntryModesInitial] = useState<string[]>(['PEDESTRIAN', 'MOTORCYCLE', 'VEHICLE']);
+  const [msg, setMsg] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api
+      .branding()
+      .then((b) => {
+        const f = {
+          name: b.name || '',
+          logoUrl: b.logoUrl || '',
+          primaryColor: b.primaryColor || '#2563eb',
+          secondaryColor: b.secondaryColor || '#1e40af',
+          primaryTextColor: b.primaryTextColor || '',
+          emailIconBg: b.emailIconBg || '#ffffff',
+          customDomain: b.customDomain || '',
+          requireApproval: !!b.requireApproval,
+          requireDispatchHostApproval: !!b.requireDispatchHostApproval,
+          photoRetentionDays: b.photoRetentionDays ?? 90,
+        };
+        setForm(f);
+        setInitial(f);
+      })
+      .finally(() => setLoading(false));
+    if (viewer?.role === 'SUPER_ADMIN') {
+      api.platformBranding().then((b) => {
+        const days = b.contractorMinDurationDays ?? 1;
+        setContractorMinDurationDays(days);
+        setContractorMinDaysInitial(days);
+        const modes = Array.isArray(b.allowedEntryModes) && b.allowedEntryModes.length ? b.allowedEntryModes : ['PEDESTRIAN', 'MOTORCYCLE', 'VEHICLE'];
+        setEntryModes(modes);
+        setEntryModesInitial(modes);
+      }).catch(() => {});
+    }
+    // restore the saved brand if the admin leaves with an unsaved live preview
+    return () => applyBranding(brandRef.current);
+  }, []);
+
+  const valid = (h: string) => /^#[0-9a-f]{6}$/i.test(h);
+
+  // live preview of colours across the whole app
+  useEffect(() => {
+    if (loading) return;
+    if (valid(form.primaryColor) && valid(form.secondaryColor)) {
+      applyBranding({
+        ...brandRef.current,
+        primaryColor: form.primaryColor,
+        secondaryColor: form.secondaryColor,
+        primaryTextColor: form.primaryTextColor || null,
+      });
+    }
+  }, [form.primaryColor, form.secondaryColor, form.primaryTextColor, loading]);
+
+  const dirty = (initial && JSON.stringify(initial) !== JSON.stringify(form)) || (isSa && (contractorMinDurationDays !== contractorMinDaysInitial || entryModes.join() !== entryModesInitial.join()));
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMsg(null);
+    try {
+      await api.updateBranding({
+        name: form.name,
+        primaryColor: form.primaryColor,
+        primaryTextColor: form.primaryTextColor || null,
+        emailIconBg: form.emailIconBg,
+        secondaryColor: form.secondaryColor,
+        customDomain: form.customDomain,
+        requireApproval: form.requireApproval,
+        requireDispatchHostApproval: form.requireDispatchHostApproval,
+        photoRetentionDays: form.photoRetentionDays,
+      });
+      if (isSa) {
+        await api.updatePlatformBranding({ contractorMinDurationDays, allowedEntryModes: entryModes });
+        setContractorMinDaysInitial(contractorMinDurationDays);
+        setEntryModesInitial(entryModes);
+        resetEntryModesCache();
+      }
+      setInitial(form);
+      await refresh();
+      window.dispatchEvent(new Event('vicit-brand-updated'));
+      setMsg({ tone: 'success', text: 'Saved — your brand is now live across Vicit, emails and the installed app.' });
+    } catch (err: any) {
+      setMsg({ tone: 'error', text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onLogo(file: File) {
+    setUploading(true);
+    setMsg(null);
+    try {
+      const res = await api.uploadLogo(file);
+      setForm((f) => ({ ...f, logoUrl: res.logoUrl || f.logoUrl }));
+      setInitial((i) => (i ? { ...i, logoUrl: res.logoUrl || i.logoUrl } : i));
+      await refresh();
+      setMsg({ tone: 'success', text: 'Logo uploaded and applied' });
+    } catch (err: any) {
+      setMsg({ tone: 'error', text: err.message });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="page">
+        <SkeletonList rows={5} h={110} />
+      </div>
+    );
+  }
+
+  const logo = form.logoUrl ? logoSrc(form.logoUrl) : null;
+
+  return (
+    <div className="page">
+      <PageHeader back={platformBack} icon={<Palette size={20} />} title="Branding & settings" subtitle="Your identity, everywhere" info="Changes preview live. Saving applies them to every page, the installed app, and all outgoing emails." />
+
+      {msg && (
+        <Notice tone={msg.tone} onClose={() => setMsg(null)}>
+          {msg.text}
+        </Notice>
+      )}
+
+      {/* Live preview */}
+      <div className="animate-in mb-4 grid grid-cols-[1fr_auto] gap-3">
+        <div className="hero !p-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-white p-1 shadow-sm">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={logo || '/icon-192.png'} alt="" className="h-full w-full object-contain" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold">{form.name || 'Organisation'}</p>
+              <p className="text-[11px] text-on-brand/70">Live preview</p>
+            </div>
+          </div>
+          <div className="mt-3 flex gap-1.5">
+            <span className="rounded-lg bg-on-brand/20 px-2 py-1 text-[10px] font-semibold">Primary</span>
+            <span className="rounded-lg bg-white px-2 py-1 text-[10px] font-semibold text-brand-700">Button</span>
+          </div>
+        </div>
+        <div className="w-[110px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-soft">
+          <div
+            className="flex h-9 items-center justify-center"
+            style={{
+              background: `linear-gradient(135deg, ${form.primaryColor}, ${form.secondaryColor})`,
+              boxShadow: form.primaryColor && form.primaryColor.toLowerCase() === '#ffffff' ? 'inset 0 0 0 1px rgb(15 23 42 / 0.14)' : undefined,
+            }}
+          >
+            <span className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-md p-0.5" style={{ background: form.emailIconBg }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={logo || '/icon-192.png'} alt="" className="h-full w-full object-contain" />
+            </span>
+          </div>
+          <div className="space-y-1 p-2">
+            <span className="block h-1.5 w-3/4 rounded bg-slate-200" />
+            <span className="block h-1.5 w-1/2 rounded bg-slate-100" />
+            <span
+              className="mt-1.5 flex h-3.5 w-14 items-center justify-center rounded text-[7px] font-bold"
+              style={{
+                background: form.primaryColor,
+                color: resolveOnPrimaryColor(form.primaryColor, form.primaryTextColor || null),
+                boxShadow: form.primaryColor && form.primaryColor.toLowerCase() === '#ffffff' ? '0 0 0 1px rgb(15 23 42 / 0.16)' : undefined,
+              }}
+            >
+              Go
+            </span>
+            <p className="flex items-center gap-1 pt-0.5 text-[9px] text-slate-400">
+              <Mail size={9} /> Email
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <form onSubmit={save} className="space-y-4 pb-20">
+        <Section icon={<Type size={16} />} title="Identity" info="Defaults from the ORGANIZATION env on first boot; editable here anytime." applies={['Navigation', 'In-app pages', 'Visitor pages', 'Emails', 'App name']}>
+          <label className="block">
+            <span className="label">Organisation name</span>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" required minLength={2} maxLength={120} />
+          </label>
+          <div className="flex items-center gap-4">
+            <button type="button" onClick={() => fileRef.current?.click()} className="group relative flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-brand-200 bg-white transition hover:border-brand-400 hover:shadow-lift">
+              {logo ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={logo} alt="Logo" className="h-full w-full object-contain p-1.5 transition group-hover:scale-105" />
+              ) : (
+                <ImagePlus className="text-brand-300" size={28} />
+              )}
+              <span className="absolute inset-x-0 bottom-0 bg-slate-900/60 py-0.5 text-center text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100">Change</span>
+            </button>
+            <div>
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="btn-ghost">
+                <ImagePlus size={16} /> {uploading ? 'Uploading…' : 'Upload logo'}
+              </button>
+              <p className="mt-1 flex items-center gap-1 text-xs text-slate-400">
+                PNG or JPG <InfoTip text="Max 3 MB. A square image with a transparent background looks best." size={12} />
+              </p>
+              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onLogo(e.target.files[0])} />
+            </div>
+          </div>
+        </Section>
+
+        <Section icon={<Palette size={16} />} title="Colours" info="Every shade on Vicit is generated from these two colours — buttons, gradients, charts, stripes and artwork." applies={['All pages', 'Charts', 'Emails', 'App theme colour']}>
+          <div className="flex flex-wrap gap-2">
+            {PRESETS.map(([p, s]) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setForm({ ...form, primaryColor: p, secondaryColor: s })}
+                className={`relative h-9 w-9 rounded-full shadow-sm ring-2 transition hover:-translate-y-0.5 hover:shadow-lift ${form.primaryColor === p ? 'ring-slate-900' : 'ring-white'}`}
+                style={{ background: `linear-gradient(135deg, ${p}, ${s})` }}
+                aria-label={`Use ${p}`}
+              >
+                {form.primaryColor === p && <Check size={14} className="absolute inset-0 m-auto" style={{ color: autoOnPrimaryColor(p) }} />}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <ColorField label="Primary" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} tip="Main brand colour — buttons, highlights, navigation" />
+            <ColorField label="Secondary" value={form.secondaryColor} onChange={(v) => setForm({ ...form, secondaryColor: v })} tip="Accent colour — gradient ends, depth and splash background" />
+          </div>
+          <ThemeTextColorField
+            primary={form.primaryColor}
+            value={form.primaryTextColor}
+            onChange={(v) => setForm({ ...form, primaryTextColor: v })}
+          />
+          <div className="flex h-3 overflow-hidden rounded-full">
+            {[50, 100, 200, 300, 400, 500, 600, 700, 800, 900].map((s) => (
+              <span key={s} className="flex-1" style={{ background: `rgb(var(--brand-${s}))` }} />
+            ))}
+          </div>
+          <ColorField label="Email logo background" value={form.emailIconBg || '#ffffff'} onChange={(v) => setForm({ ...form, emailIconBg: v })} tip="Background behind your logo in emails (use white for transparent PNGs)" />
+        </Section>
+
+        <Section icon={<Globe size={16} />} title="Custom domain" info="Registration links and QR emails will point to this domain. Point its DNS at your Vicit frontend first." applies={['Invite links', 'QR emails']}>
+          <input value={form.customDomain} onChange={(e) => setForm({ ...form, customDomain: e.target.value.trim() })} className="input" placeholder="visitors.yourorg.com" />
+        </Section>
+
+        <Section icon={<ShieldCheck size={16} />} title="Approvals & privacy" info="Control who can invite instantly and how long visitor photos are kept." applies={['New invites', 'Admin approvals', 'Photo cleanup']}>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.requireApproval}
+            onClick={() => setForm({ ...form, requireApproval: !form.requireApproval })}
+            className="tile flex w-full items-center gap-3 text-left transition hover:shadow-soft"
+          >
+            <Bell size={18} className="text-brand-600" />
+            <span className="flex-1">
+              <span className="flex items-center gap-1 text-sm font-semibold text-slate-800">
+                Require approval for invites
+                <InfoTip text="When on, invites from staff wait for an admin. Guests are emailed only after approval." size={12} />
+              </span>
+              <span className="block text-xs text-slate-500">{form.requireApproval ? 'Admins approve every staff invite' : 'Staff invites go out instantly'}</span>
+            </span>
+            <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${form.requireApproval ? 'bg-gradient-to-r from-brand-500 to-brand-700' : 'bg-slate-200'}`}>
+              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${form.requireApproval ? 'left-6' : 'left-1'}`} />
+            </span>
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.requireDispatchHostApproval}
+            onClick={() => setForm({ ...form, requireDispatchHostApproval: !form.requireDispatchHostApproval })}
+            className="tile flex w-full items-center gap-3 text-left transition hover:shadow-soft"
+          >
+            <Package size={18} className="text-brand-600" />
+            <span className="flex-1">
+              <span className="flex items-center gap-1 text-sm font-semibold text-slate-800">
+                Require host approval for dispatches
+                <InfoTip text="When on, gate officers can still register a courier, but a host must approve before the dispatch is marked delivered." size={12} />
+              </span>
+              <span className="block text-xs text-slate-500">{form.requireDispatchHostApproval ? 'Hosts approve incoming letters and parcels' : 'Dispatches are logged without host approval'}</span>
+            </span>
+            <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${form.requireDispatchHostApproval ? 'bg-gradient-to-r from-brand-500 to-brand-700' : 'bg-slate-200'}`}>
+              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${form.requireDispatchHostApproval ? 'left-6' : 'left-1'}`} />
+            </span>
+          </button>
+          {isSa && (
+            <div className="tile space-y-2" data-testid="entry-modes-setting">
+              <p className="flex items-center gap-1 text-sm font-semibold text-slate-800">
+                Modes of entry accepted
+                <InfoTip text="Platform-wide (Super Admin). Only the modes switched on appear on the New invite form and at the gate. At least one must stay on." size={12} />
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {ALL_MODES.map((m) => {
+                  const on = entryModes.includes(m.v);
+                  return (
+                    <button
+                      key={m.v}
+                      type="button"
+                      role="switch"
+                      aria-checked={on}
+                      onClick={() => setEntryModes((cur) => (on ? (cur.length > 1 ? cur.filter((x) => x !== m.v) : cur) : ALL_MODES.map((x) => x.v).filter((x) => x === m.v || cur.includes(x))))}
+                      className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-2.5 text-xs font-semibold transition ${on ? 'border-brand-300 bg-brand-50 text-brand-700 shadow-sm' : 'border-slate-200 bg-white text-slate-400'}`}
+                    >
+                      {m.icon}
+                      {m.l}
+                      <span className={`text-[10px] font-medium ${on ? 'text-brand-600' : 'text-slate-400'}`}>{on ? 'On' : 'Off'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-500">Vehicle and motorcycle entries ask for a plate number and colour/brand.</p>
+            </div>
+          )}
+          {isSa && (
+            <label className="block">
+              <span className="label">
+                Minimum contractor pass (days)
+                <InfoTip text="Platform-wide. A contractor ID card must be valid for at least this many days. Applies to every agency." size={12} />
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={contractorMinDurationDays}
+                onChange={(e) => setContractorMinDurationDays(Math.max(1, Math.min(365, parseInt(e.target.value) || 1)))}
+                className="input !w-28"
+              />
+            </label>
+          )}
+          <label className="block">
+            <span className="label">
+              <Clock size={14} /> Photo retention
+              <InfoTip text="Visitor photos older than this are deleted by the automatic cleanup (7–3650 days)." size={12} />
+            </span>
+            <span className="flex items-center gap-3">
+              <input type="range" min={7} max={365} value={Math.min(365, form.photoRetentionDays)} onChange={(e) => setForm({ ...form, photoRetentionDays: parseInt(e.target.value) })} className="flex-1 accent-[rgb(var(--brand-600))]" />
+              <input type="number" min={7} max={3650} value={form.photoRetentionDays} onChange={(e) => setForm({ ...form, photoRetentionDays: parseInt(e.target.value) || 90 })} className="input !w-24 !py-2 text-center" />
+              <span className="text-xs text-slate-500">days</span>
+            </span>
+          </label>
+        </Section>
+
+        <div className="fixed inset-x-0 bottom-[calc(var(--nav-height)+max(0.6rem,var(--safe-bottom))+0.5rem)] z-40 px-4">
+          <div className={`mx-auto flex max-w-lg gap-2 rounded-2xl border border-white/70 bg-white/85 p-2 shadow-lift backdrop-blur-xl transition duration-300 ${dirty ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-4 opacity-0'}`}>
+            <button type="button" className="btn-ghost" onClick={() => { if (initial) setForm(initial); setContractorMinDurationDays(contractorMinDaysInitial); setEntryModes(entryModesInitial); }}>
+              <RotateCcw size={15} /> Reset
+            </button>
+            <button type="submit" disabled={saving} className="btn-primary flex-1">
+              <Save size={16} /> {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {viewer?.role === 'SUPER_ADMIN' && <SignInSettings />}
+    </div>
+  );
+}
+
+function SignInSettings() {
+  const [form, setForm] = useState({
+    loginLogoUrl: '',
+    loginLogoWidth: '180px',
+    loginWatermarkUrl: '',
+    loginWatermarkWidth: '70vw',
+    loginWatermarkHeight: '70vh',
+    loginWatermarkOpacity: 0.08,
+    loginHeadline: '',
+    loginPrimaryColor: '',
+    loginSecondaryColor: '',
+    footerCredit: "Powered by CISTECH's Vicit 1.0.1",
+    footerCreditEnabled: true,
+    footerCreditMobileMode: 'FLOATING' as 'FLOATING' | 'STATIC',
+    loginTitle: 'Defence Headquarters',
+    loginLogoVisible: true,
+    superAdminCanInvite: true,
+    profileTemplates: mergeTemplates(null) as ProfileTemplates,
+  });
+  const [agencies, setAgencies] = useState<any[]>([]);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState('');
+  const [clearLogoOpen, setClearLogoOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const logoRef = useRef<HTMLInputElement>(null);
+  const markRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api.platformBranding().then((b) => {
+      setForm({
+        loginLogoUrl: b.loginLogoUrl || '',
+        loginLogoWidth: b.loginLogoWidth || '180px',
+        loginWatermarkUrl: b.loginWatermarkUrl || '',
+        loginWatermarkWidth: b.loginWatermarkWidth || '70vw',
+        loginWatermarkHeight: b.loginWatermarkHeight || '70vh',
+        loginWatermarkOpacity: b.loginWatermarkOpacity ?? 0.08,
+        loginHeadline: b.loginHeadline || '',
+        loginPrimaryColor: b.loginPrimaryColor || '',
+        loginSecondaryColor: b.loginSecondaryColor || '',
+        footerCredit: b.footerCredit || "Powered by CISTECH's Vicit 1.0.1",
+        footerCreditEnabled: b.footerCreditEnabled !== false,
+        footerCreditMobileMode: b.footerCreditMobileMode === 'STATIC' ? 'STATIC' : 'FLOATING',
+        loginTitle: b.loginTitle || 'Defence Headquarters',
+        loginLogoVisible: b.loginLogoVisible !== false,
+        superAdminCanInvite: b.superAdminCanInvite !== false,
+        profileTemplates: mergeTemplates(b.profileTemplates),
+      });
+      if (Array.isArray(b.agencies)) setAgencies(b.agencies);
+    }).catch(() => {});
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMsg(null);
+    try {
+      await api.updatePlatformBranding({
+        ...form,
+        agencies: agencies.map((a, i) => ({
+          id: a.id,
+          loginOrder: i,
+          loginVisible: a.loginVisible !== false,
+          loginTileColor: a.loginTileColor || null,
+        })),
+      });
+      window.dispatchEvent(new Event('vicit-brand-updated'));
+      setMsg({ tone: 'success', text: 'Platform settings saved — live on every device.' });
+    } catch (err: any) {
+      setMsg({ tone: 'error', text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onFile(kind: 'logo' | 'watermark', file: File) {
+    setUploading(kind);
+    setMsg(null);
+    try {
+      const res = kind === 'logo' ? await api.uploadLoginLogo(file) : await api.uploadLoginWatermark(file);
+      setForm((f) => ({
+        ...f,
+        loginLogoUrl: kind === 'logo' ? res.loginLogoUrl || f.loginLogoUrl : f.loginLogoUrl,
+        loginWatermarkUrl: kind === 'watermark' ? res.loginWatermarkUrl || f.loginWatermarkUrl : f.loginWatermarkUrl,
+      }));
+      setMsg({ tone: 'success', text: kind === 'logo' ? 'Sign-in logo uploaded' : 'Watermark uploaded' });
+    } catch (err: any) {
+      setMsg({ tone: 'error', text: err.message });
+    } finally {
+      setUploading('');
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-6 space-y-4 pb-28">
+      <Section icon={<LogIn size={16} />} title="Sign-in page" info="These settings are used on every login screen, regardless of the last agency that was visited." applies={['Login only']}>
+        <label className="block">
+          <span className="label">Title</span>
+          <input value={form.loginTitle} onChange={(e) => setForm({ ...form, loginTitle: e.target.value })} className="input" placeholder="Defence Headquarters" maxLength={120} />
+          <p className="mt-1 text-[11px] text-slate-400">Shown as the sign-in heading and as the suffix on every browser tab.</p>
+        </label>
+        <label className="block">
+          <span className="label">Headline</span>
+          <input value={form.loginHeadline} onChange={(e) => setForm({ ...form, loginHeadline: e.target.value })} className="input" placeholder="Optional — shown under the title if different" maxLength={120} />
+        </label>
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <button type="button" onClick={() => logoRef.current?.click()} className="group relative flex h-20 min-w-[5rem] items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-brand-200 bg-white px-3 transition hover:border-brand-400">
+              {form.loginLogoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={logoSrc(form.loginLogoUrl) || ''} alt="Sign-in logo" className="max-h-16 max-w-[6rem] object-contain" />
+              ) : (
+                <ImagePlus className="text-brand-300" size={28} />
+              )}
+            </button>
+            {form.loginLogoUrl && (
+              <button
+                type="button"
+                title="Remove sign-in logo"
+                aria-label="Remove sign-in logo"
+                onClick={() => setClearLogoOpen(true)}
+                className="absolute -right-2 -top-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+              >
+                <Minus size={12} strokeWidth={3} />
+              </button>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <button type="button" onClick={() => logoRef.current?.click()} disabled={uploading === 'logo'} className="btn-ghost">
+              <ImagePlus size={16} /> {uploading === 'logo' ? 'Uploading…' : 'Upload sign-in logo'}
+            </button>
+            <p className="mt-1 text-xs text-slate-400">Wide or square marks are both fine — set the width below. Use the − button to remove an uploaded logo so the sign-in form has no mark above it.</p>
+            <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile('logo', e.target.files[0])} />
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={form.loginLogoVisible}
+          onClick={() => setForm({ ...form, loginLogoVisible: !form.loginLogoVisible })}
+          className="tile flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span>
+            <span className="block text-sm font-semibold text-slate-800">Show logo above sign-in form</span>
+            <span className="mt-0.5 block text-[11px] text-slate-500">Hide it without deleting the upload. When shown, the logo sits centred directly above the form.</span>
+          </span>
+          <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${form.loginLogoVisible ? 'bg-gradient-to-r from-brand-500 to-brand-700' : 'bg-slate-200'}`}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${form.loginLogoVisible ? 'left-6' : 'left-1'}`} />
+          </span>
+        </button>
+        <label className="block">
+          <span className="label">Logo width <InfoTip text="Accepts px, %, vw or rem. Use a wider value for logos that lean towards imagery." size={12} /></span>
+          <input value={form.loginLogoWidth} onChange={(e) => setForm({ ...form, loginLogoWidth: e.target.value })} className="input font-mono" placeholder="180px" />
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <ColorField label="Sign-in primary" value={form.loginPrimaryColor || '#2563eb'} onChange={(v) => setForm({ ...form, loginPrimaryColor: v })} tip="Background and accents on the login page only" />
+          <ColorField label="Sign-in secondary" value={form.loginSecondaryColor || '#1e40af'} onChange={(v) => setForm({ ...form, loginSecondaryColor: v })} tip="Gradient end on the login page only" />
+        </div>
+        <div className="flex items-center gap-4">
+          <button type="button" onClick={() => markRef.current?.click()} className="btn-ghost">
+            <ImagePlus size={16} /> {uploading === 'watermark' ? 'Uploading…' : 'Upload watermark'}
+          </button>
+          <input ref={markRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile('watermark', e.target.files[0])} />
+          {form.loginWatermarkUrl && <span className="text-xs font-medium text-emerald-700">Watermark set</span>}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <label className="block"><span className="label">Width</span><input value={form.loginWatermarkWidth} onChange={(e) => setForm({ ...form, loginWatermarkWidth: e.target.value })} className="input font-mono !px-2" placeholder="70vw" /></label>
+          <label className="block"><span className="label">Height</span><input value={form.loginWatermarkHeight} onChange={(e) => setForm({ ...form, loginWatermarkHeight: e.target.value })} className="input font-mono !px-2" placeholder="70vh" /></label>
+          <label className="block"><span className="label">Opacity</span><input type="number" min={0} max={1} step={0.01} value={form.loginWatermarkOpacity} onChange={(e) => setForm({ ...form, loginWatermarkOpacity: Number(e.target.value) })} className="input font-mono !px-2" /></label>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+          <p className="label mb-1">Agency logo grid</p>
+          <p className="mb-3 text-[11px] text-slate-500">Drag to reorder (or use the arrows). Hidden agencies stay off the sign-in page. Set a tile background, or Auto for the default glass / brand style. The preview below updates live.</p>
+          <ul className="space-y-1.5">
+            {agencies.map((a, i) => (
+              <li
+                key={a.id}
+                draggable
+                onDragStart={() => setDragId(a.id)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  if (!dragId || dragId === a.id) return;
+                  setAgencies((list) => {
+                    const from = list.findIndex((x) => x.id === dragId);
+                    const next = [...list];
+                    const [row] = next.splice(from, 1);
+                    next.splice(i, 0, row);
+                    return next;
+                  });
+                  setDragId(null);
+                }}
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5"
+              >
+                <span className="cursor-grab text-slate-400" aria-hidden><GripVertical size={15} /></span>
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-800">{a.shortName || a.name}</span>
+                <span className="flex items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()} draggable={false}>
+                  <span
+                    className="relative h-7 w-7 shrink-0 overflow-hidden rounded-md border border-slate-200 shadow-inner"
+                    style={{ background: a.loginTileColor || 'linear-gradient(145deg, rgb(var(--brand-500)), rgb(var(--brand-800)))' }}
+                    title="Tile background"
+                  >
+                    <input
+                      type="color"
+                      aria-label={`Tile colour for ${a.shortName || a.name}`}
+                      value={a.loginTileColor || '#2563eb'}
+                      onChange={(e) => setAgencies((list) => list.map((x) => x.id === a.id ? { ...x, loginTileColor: e.target.value } : x))}
+                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    />
+                  </span>
+                  <input
+                    value={a.loginTileColor || ''}
+                    placeholder="Auto"
+                    maxLength={7}
+                    aria-label={`Tile colour hex for ${a.shortName || a.name}`}
+                    onChange={(e) => setAgencies((list) => list.map((x) => x.id === a.id ? { ...x, loginTileColor: e.target.value } : x))}
+                    className="w-[5.5rem] rounded-lg border border-slate-200 bg-white px-1.5 py-1 font-mono text-[11px] uppercase text-slate-700 outline-none focus:border-brand-300"
+                  />
+                  <button
+                    type="button"
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${a.loginTileColor ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-brand-50 text-brand-700 ring-1 ring-brand-200'}`}
+                    onClick={() => setAgencies((list) => list.map((x) => x.id === a.id ? { ...x, loginTileColor: null } : x))}
+                  >
+                    Auto
+                  </button>
+                </span>
+                <button type="button" className="rounded-md p-1 text-slate-500 hover:bg-slate-100" aria-label="Move up" disabled={i === 0} onClick={() => setAgencies((list) => { const n = [...list]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })}>
+                  <ChevronUp size={15} />
+                </button>
+                <button type="button" className="rounded-md p-1 text-slate-500 hover:bg-slate-100" aria-label="Move down" disabled={i === agencies.length - 1} onClick={() => setAgencies((list) => { const n = [...list]; [n[i + 1], n[i]] = [n[i], n[i + 1]]; return n; })}>
+                  <ChevronDown size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
+                  aria-label={a.loginVisible === false ? 'Show on sign-in' : 'Hide from sign-in'}
+                  onClick={() => setAgencies((list) => list.map((x) => x.id === a.id ? { ...x, loginVisible: x.loginVisible === false } : x))}
+                >
+                  {a.loginVisible === false ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-white p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Live preview</p>
+            <div className="hidden sm:block"><LoginAgencyGrid agencies={agencies} variant="preview" /></div>
+            <div className="sm:hidden"><LoginAgencyGrid agencies={agencies} variant="mobile" /></div>
+          </div>
+        </div>
+      </Section>
+
+      <Section icon={<ShieldCheck size={16} />} title="Footer credit" info="Shown on the login screen, under the mobile navigation, and at the foot of the desktop sidebar." applies={['Login', 'Mobile footer', 'Desktop sidebar']}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={form.footerCreditEnabled}
+          onClick={() => setForm({ ...form, footerCreditEnabled: !form.footerCreditEnabled })}
+          className="tile flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span className="text-sm font-semibold text-slate-800">Show footer credit</span>
+          <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${form.footerCreditEnabled ? 'bg-gradient-to-r from-brand-500 to-brand-700' : 'bg-slate-200'}`}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${form.footerCreditEnabled ? 'left-6' : 'left-1'}`} />
+          </span>
+        </button>
+        <input value={form.footerCredit} onChange={(e) => setForm({ ...form, footerCredit: e.target.value })} className="input" maxLength={160} />
+        <div>
+          <p className="label">Mobile placement</p>
+          <p className="mb-2 text-[11px] text-slate-500">Floating sits just above the bottom navigation. Static is a regular footer at the bottom of the page content, clear of the nav.</p>
+          <div className="segmented">
+            <button type="button" data-active={form.footerCreditMobileMode !== 'STATIC'} onClick={() => setForm({ ...form, footerCreditMobileMode: 'FLOATING' })}>Floating</button>
+            <button type="button" data-active={form.footerCreditMobileMode === 'STATIC'} onClick={() => setForm({ ...form, footerCreditMobileMode: 'STATIC' })}>Static</button>
+          </div>
+        </div>
+      </Section>
+
+      <Section icon={<UserPlus size={16} />} title="Visitor invites" info="Whether Super Admins and Super Admin II accounts can create new visitor invites. Their existing invites always stay visible." applies={['Super Admin', 'Super Admin II']}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={form.superAdminCanInvite}
+          data-testid="toggle-super-admin-invite"
+          onClick={() => setForm({ ...form, superAdminCanInvite: !form.superAdminCanInvite })}
+          className="tile flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span>
+            <span className="block text-sm font-semibold text-slate-800">Allow super admins to invite visitors</span>
+            <span className="mt-0.5 block text-[11px] text-slate-500">{form.superAdminCanInvite ? 'On — Invite shows on the Super Admin dashboard and menu.' : 'Off — Invite is hidden for Super Admins and new invites are refused. Old invites stay in Visits, history and the audit.'}</span>
+          </span>
+          <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${form.superAdminCanInvite ? 'bg-gradient-to-r from-brand-500 to-brand-700' : 'bg-slate-200'}`}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${form.superAdminCanInvite ? 'left-6' : 'left-1'}`} />
+          </span>
+        </button>
+      </Section>
+
+      <Section icon={<Tag size={16} />} title="Gate pass" info="Applies to all agencies." applies={['All gates', 'Visits page']}>
+        <GatePassProtocolSetting editable bare />
+      </Section>
+
+      <Section icon={<IdCard size={16} />} title="Profile header builder" info="One set of templates for every agency. Build each line from placeholders; custom fields fill in for agencies that have them and are left out cleanly elsewhere." applies={['Dashboard greeting', 'Host profile card', 'My profile header']}>
+        <ProfileHeaderBuilder value={form.profileTemplates} onChange={(v) => setForm({ ...form, profileTemplates: v })} />
+      </Section>
+
+      {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
+      <button type="submit" disabled={saving} className="btn-primary w-full" data-testid="save-platform-settings">
+        <Save size={16} /> {saving ? 'Saving…' : 'Save platform settings'}
+      </button>
+
+      <SleekOverlay
+        open={clearLogoOpen}
+        onClose={() => !clearing && setClearLogoOpen(false)}
+        tone="rose"
+        title="Remove sign-in logo"
+        subtitle="The logo will be cleared. The sign-in page will show no mark above the form — only the agency tiles, if any."
+        icon={<Minus size={20} />}
+        footer={
+          <>
+            <button type="button" className="btn-quiet flex-1" disabled={clearing} onClick={() => setClearLogoOpen(false)}>Cancel</button>
+            <button
+              type="button"
+              className="btn-primary flex-1 !bg-rose-600 hover:!bg-rose-700"
+              disabled={clearing}
+              onClick={async () => {
+                setClearing(true);
+                setMsg(null);
+                try {
+                  await api.updatePlatformBranding({ loginLogoUrl: null });
+                  setForm((f) => ({ ...f, loginLogoUrl: '' }));
+                  window.dispatchEvent(new Event('vicit-brand-updated'));
+                  setClearLogoOpen(false);
+                  setMsg({ tone: 'success', text: 'Sign-in logo removed. The form will have no logo above it.' });
+                } catch (err: any) {
+                  setMsg({ tone: 'error', text: err.message || 'Could not remove the logo' });
+                } finally {
+                  setClearing(false);
+                }
+              }}
+            >
+              {clearing ? 'Removing…' : 'Remove logo'}
+            </button>
+          </>
+        }
+      />
+    </form>
+  );
+}
