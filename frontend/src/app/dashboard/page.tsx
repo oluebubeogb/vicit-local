@@ -265,12 +265,8 @@ export default function DashboardPage() {
       router.replace('/change-password');
       return;
     }
-    if (u.role === 'SUPER_ADMIN' || u.role === 'GLOBAL_ADMIN') {
+    if (u.role === 'SUPER_ADMIN') {
       router.replace('/platform');
-      return;
-    }
-    if (u.role === 'GLOBAL_GATE') {
-      router.replace('/gate');
       return;
     }
     setUserState(u);
@@ -307,7 +303,7 @@ export default function DashboardPage() {
   }, [invites]);
 
   const quick = [
-    { href: '/invite/new', label: 'New invite', tip: 'Create a registration link or a walk-in request', icon: UserPlus, tone: 'from-brand-50 to-brand-100 text-brand-600' },
+    { href: '/invite/new', label: 'New invite', tip: 'Create a visit and passphrase', icon: UserPlus, tone: 'from-brand-50 to-brand-100 text-brand-600' },
     { href: '/visitors', label: 'My visitors', tip: 'Everyone you have invited, with live status', icon: Users, tone: 'from-emerald-50 to-emerald-100 text-emerald-600' },
     { href: '/notifications', label: 'Alerts', tip: 'Arrivals, exits and approvals for your guests', icon: Bell, tone: 'from-violet-50 to-violet-100 text-violet-600' },
     ...(user?.role === 'ADMIN'
@@ -453,7 +449,7 @@ export default function DashboardPage() {
           <Empty
             icon={<UserPlus size={24} />}
             title="No invites yet"
-            hint="Create your first invite and your guests will get a secure registration link."
+            hint="Create your first invite to get a passphrase for the gate."
             action={
               <Link href="/invite/new" className="btn-primary">
                 Create invite

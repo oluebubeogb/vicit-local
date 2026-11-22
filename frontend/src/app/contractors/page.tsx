@@ -15,7 +15,7 @@ function isoDate(d: Date) {
 
 export default function ContractorsPage() {
   const user = getUser();
-  const canManage = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'ADMIN'].includes(String(user?.role));
+  const canManage = ['SUPER_ADMIN', 'ADMIN'].includes(String(user?.role));
   const [data, setData] = useState<any>(null);
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('active');
@@ -83,7 +83,7 @@ export default function ContractorsPage() {
 function ContractorForm({ open, onClose, minDays, onCreated }: { open: boolean; onClose: () => void; minDays: number; onCreated: () => void }) {
   const user = getUser();
   const [agencies, setAgencies] = useState<any[]>([]);
-  const isPlatform = ['SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(String(user?.role));
+  const isPlatform = ['SUPER_ADMIN'].includes(String(user?.role));
   const [form, setForm] = useState({ fullName: '', company: '', phone: '', email: '', organisationId: '', organisationIds: [] as string[], cycle: 'monthly', validFrom: isoDate(new Date()), validThrough: isoDate(new Date(Date.now() + minDays * 86400000)) });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

@@ -10,7 +10,7 @@ import StatusPill from '@/components/ui/StatusPill';
 import Collapse from '@/components/ui/Collapse';
 import HostSuggest, { type HostPick } from '@/components/HostSuggest';
 import CaptureThumbGrid from '@/components/CaptureThumbGrid';
-import { InAppCallButton, PhoneCallLink } from '@/components/CallButtons';
+import { PhoneCallLink } from '@/components/CallButtons';
 
 const TONE: Record<string, 'emerald' | 'amber' | 'rose' | 'slate'> = {
   REGISTERED: 'slate',
@@ -23,7 +23,7 @@ const TONE: Record<string, 'emerald' | 'amber' | 'rose' | 'slate'> = {
 
 export default function DispatchPage() {
   const user = getUser();
-  const isGate = ['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(String(user?.role));
+  const isGate = ['GATE', 'SUPER_ADMIN'].includes(String(user?.role));
   const [rows, setRows] = useState<any[] | null>(null);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -54,9 +54,6 @@ export default function DispatchPage() {
     } finally {
       setConfirmBusy(false);
     }
-  }
-  async function ring(id: string, hostId: string) {
-    try { const call = await api.startDispatchRing(id, hostId); window.dispatchEvent(new CustomEvent('vicit:ring-local', { detail: call })); } catch (e: any) { setError(e.message); }
   }
 
   return (
@@ -109,7 +106,7 @@ export default function DispatchPage() {
                     </span>
                   )}
                   <span className="ml-auto flex gap-1">
-                    {dest.hostId && isGate && <InAppCallButton compact className="!px-2 !py-1" onClick={() => ring(d.id, dest.hostId)} />}{dest.host?.phone && <PhoneCallLink phone={dest.host.phone} compact />}
+                    {dest.host?.phone && <PhoneCallLink phone={dest.host.phone} compact />}
                     {dest.status === 'PENDING' && <button type="button" className="btn-success !px-2 !py-1" onClick={() => decide(d.id, dest.organisationId, true)}>Approve</button>}
                     {dest.status === 'PENDING' && <button type="button" className="btn-danger !px-2 !py-1" onClick={() => decide(d.id, dest.organisationId, false)}>Decline</button>}
                   </span>

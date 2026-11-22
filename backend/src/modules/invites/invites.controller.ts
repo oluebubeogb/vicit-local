@@ -16,7 +16,7 @@ export class InvitesController {
   @Post('visitors/:visitorId/transfer')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+  @Roles(Role.ADMIN, Role.STAFF, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Transfer a visit to another agency or host' })
   transfer(@Param('visitorId') visitorId: string, @Body() body: any, @CurrentUser() user: any) {
     return this.invitesService.transferVisit(user, visitorId, body || {});
@@ -26,7 +26,7 @@ export class InvitesController {
   @Post()
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Create visitor invite' })
   create(@Body() dto: CreateInviteDto, @CurrentUser() user: any) {
     return this.invitesService.create(dto, user.id, user.orgId, user.role);
@@ -35,7 +35,7 @@ export class InvitesController {
   @Get('mine')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'List my invites' })
   mine(@CurrentUser() user: any) {
     return this.invitesService.findMyInvites(user.id);
@@ -44,7 +44,7 @@ export class InvitesController {
   @Get('search')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Ranked multi-word search across invites and their visitors' })
   search(
     @CurrentUser() user: any,
@@ -69,34 +69,10 @@ export class InvitesController {
     return this.invitesService.findAll(user.orgId);
   }
 
-  @Get('public/:token')
-  @ApiOperation({ summary: 'Public: get invite by token (for visitor page)' })
-  publicInfo(@Param('token') token: string) {
-    return this.invitesService.getPublicInviteInfo(token);
-  }
-
-  @Get('identity/pending')
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
-  @ApiOperation({ summary: 'Gate photos of no-contact guests waiting for this host to confirm' })
-  pendingIdentity(@CurrentUser() user: any) {
-    return this.invitesService.pendingIdentity(user);
-  }
-
-  @Post('visitors/:visitorId/identity')
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
-  @ApiOperation({ summary: 'Host confirms (tick) or declines (X) a no-contact guest photo from the gate' })
-  reviewIdentity(@Param('visitorId') visitorId: string, @Body() body: { confirm: boolean }, @CurrentUser() user: any) {
-    return this.invitesService.reviewIdentity(visitorId, user, !!body?.confirm);
-  }
-
   @Post(':id/cancel')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Host cancels an invite; guests are notified' })
   cancel(@Param('id') id: string, @Body() body: { reason?: string }, @CurrentUser() user: any) {
     return this.invitesService.cancel(id, user, body?.reason);
@@ -105,7 +81,7 @@ export class InvitesController {
   @Post(':id/postpone')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Postpone an active or expired invite to a future date/time' })
   postpone(@Param('id') id: string, @Body() body: { expectedAt?: string; note?: string }, @CurrentUser() user: any) {
     return this.invitesService.postpone(id, user, body || {});
@@ -114,25 +90,16 @@ export class InvitesController {
   @Post(':id/confirm-availability')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Host confirms they will be available for the visit (reminder action)' })
   confirmAvailability(@Param('id') id: string, @CurrentUser() user: any) {
     return this.invitesService.confirmAvailability(id, user);
   }
 
-  @Post(':id/resend-emails')
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
-  @ApiOperation({ summary: 'Email the registration link again to every guest that has an email' })
-  resendEmails(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.invitesService.resendGuestEmails(id, user);
-  }
-
   @Post(':id/revive')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Revive an expired invite (new 60-min window)' })
   revive(@Param('id') id: string, @CurrentUser() user: any) {
     return this.invitesService.revive(id, user.id, user.orgId);

@@ -17,7 +17,7 @@ export class AdminOrGateSilentGuard extends AuthGuard('jwt') {
   }
 
   handleRequest(err: any, user: any) {
-    if (err || !user || (!['ADMIN', 'GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(user.role))) {
+    if (err || !user || (!['ADMIN', 'GATE', 'SUPER_ADMIN'].includes(user.role))) {
       throw new NotFoundException('Not found');
     }
     return user;

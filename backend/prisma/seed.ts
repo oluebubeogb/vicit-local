@@ -71,6 +71,25 @@ async function main() {
   });
 
   console.log(`Admin ready: ${adminEmail} (password synced from ADMIN_PASSWORD)`);
+  await seedDefaultGates(org.id);
+}
+
+/**
+ * v33: first boot only (agency has no sites yet) — Headquarters with
+ * Main Gate (checkpoint 1: North Main Gate + South Main Gate) and Agency Gate (checkpoint 2).
+ * Admins can rename or delete all of them; they are never re-created once a site exists.
+ */
+async function seedDefaultGates(orgId: string) {
+  if ((await prisma.location.count({ where: { organisationId: orgId } })) > 0) return;
+  const loc = await prisma.location.create({ data: { name: 'Headquarters', code: 'HQ', organisationId: orgId } });
+  await prisma.gate.createMany({
+    data: [
+      { name: 'North Main Gate', code: 'MAIN-N', groupName: 'Main Gate', sequence: 0, locationId: loc.id },
+      { name: 'South Main Gate', code: 'MAIN-S', groupName: 'Main Gate', sequence: 0, locationId: loc.id },
+      { name: 'Agency Gate', code: 'AGENCY', sequence: 1, locationId: loc.id },
+    ],
+  });
+  console.log('Default gates created: Main Gate (North / South), Agency Gate');
 }
 
 main()

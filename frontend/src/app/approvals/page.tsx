@@ -39,7 +39,7 @@ export default function ApprovalsPage() {
   useEffect(() => {
     const u = getUser();
     if (!u) { router.replace('/login'); return; }
-    if (!['ADMIN', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(u.role)) { router.replace('/dashboard'); return; }
+    if (!['ADMIN', 'SUPER_ADMIN'].includes(u.role)) { router.replace('/dashboard'); return; }
     setMe(u);
     load(u);
     // eslint-disable-next-line react-hooks/exhaustive-deps

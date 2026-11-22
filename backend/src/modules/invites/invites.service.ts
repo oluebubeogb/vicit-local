@@ -49,66 +49,14 @@ export class InvitesService {
     return (await this.deliverGuestInviteEmails(inviteId)).sent;
   }
 
-  /**
-   * v23: email every guest that has an address — phone is never considered. Returns who was
-   * emailed and who could not be (SMTP missing / rejected), so the host sees a failure instead
-   * of silence and can resend.
-   */
-  private async deliverGuestInviteEmails(inviteId: string) {
-    const invite = await this.prisma.invite.findUnique({
-      where: { id: inviteId },
-      include: {
-        visitors: true,
-        host: { select: { fullName: true } },
-        organisation: { select: { id: true, name: true, customDomain: true } },
-      },
-    });
-    if (!invite) return { sent: [] as string[], failed: [] as Array<{ visitorId: string; fullName: string; email: string; error: string }> };
-    const ttl = Math.max(1, Math.round((invite.expiresAt.getTime() - Date.now()) / 60000));
-    const link = `${publicFrontendBase(invite.organisation?.customDomain)}/visitor/${invite.token}`;
-    const sent: string[] = [];
-    const failed: Array<{ visitorId: string; fullName: string; email: string; error: string }> = [];
-    for (const v of invite.visitors) {
-      if (!v.email) continue;
-      if (['CANCELLED', 'DENIED', 'EXITED'].includes(v.status)) continue;
-      const r: any = await this.mail.sendInviteEmail({
-        to: v.email,
-        guestName: v.fullName,
-        hostName: (invite as any).hostName || invite.host.fullName,
-        purpose: invite.purpose,
-        link,
-        passphrase: invite.passphrase,
-        ttlMinutes: ttl,
-        expectedAt: invite.expectedAt ? invite.expectedAt.toISOString() : null,
-        orgName: invite.organisation?.name,
-        organisationId: invite.organisation?.id,
-      });
-      if (r?.ok) sent.push(v.email);
-      else failed.push({ visitorId: v.id, fullName: v.fullName, email: v.email, error: r?.error || 'Mail could not be sent' });
-    }
-    return { sent, failed };
-  }
-
-  /** Host / agency admin / Super Admin: email the registration link again to every guest with an email. */
-  async resendGuestEmails(inviteId: string, actor: any) {
-    const invite = await this.prisma.invite.findUnique({ where: { id: inviteId } });
-    if (!invite) throw new NotFoundException('Invite not found');
-    const allowed = invite.hostId === actor.id || actor.role === 'SUPER_ADMIN' || (actor.role === 'ADMIN' && invite.organisationId === actor.orgId);
-    if (!allowed) throw new ForbiddenException('Only the host or an administrator can resend this invite');
-    if (invite.cancelledAt || invite.status === InviteStatus.REVOKED) throw new BadRequestException('This invite was cancelled');
-    if (invite.status === InviteStatus.AWAITING_APPROVAL || invite.status === InviteStatus.OFFLINE_PENDING) throw new BadRequestException('Guests are emailed once the invite is approved');
-    const ttl = parseInt(process.env.INVITE_LINK_TTL_MINUTES || '60', 10);
-    if (invite.expiresAt.getTime() < Date.now() + 5 * 60 * 1000) {
-      await this.prisma.invite.update({ where: { id: inviteId }, data: { expiresAt: new Date(Date.now() + ttl * 60 * 1000), ...(invite.status === InviteStatus.EXPIRED ? { status: InviteStatus.ACTIVE } : {}) } });
-    }
-    const { sent, failed } = await this.deliverGuestInviteEmails(inviteId);
-    await this.auditGuestNotified(inviteId, actor.id, 'INVITE_LINK_RESENT', sent, { failed: failed.map((f) => ({ email: f.email, error: f.error })) });
-    return { emailsSent: sent, emailsFailed: failed };
+  /** v33 intranet: guests are never emailed (no registration / photo link). Kept as a no-op for callers. */
+  private async deliverGuestInviteEmails(_inviteId: string) {
+    return { sent: [] as string[], failed: [] as Array<{ visitorId: string; fullName: string; email: string; error: string }> };
   }
 
   async create(dto: CreateInviteDto, hostId: string, orgId: string, creatorRole?: string) {
     // v25: Super Admin branding setting "Allow super admins to invite visitors"
-    if (creatorRole === Role.SUPER_ADMIN || creatorRole === Role.GLOBAL_ADMIN) {
+    if (creatorRole === Role.SUPER_ADMIN) {
       const ps = await this.prisma.platformSettings.findUnique({ where: { id: 'platform' } });
       if ((ps as any)?.superAdminCanInvite === false) {
         throw new ForbiddenException('Inviting visitors is turned off for Super Admins. Ask the Super Admin to switch it on in Branding settings.');
@@ -122,7 +70,7 @@ export class InvitesService {
     // Branding & Settings → "Require approval for invites": non-admin invites wait for an admin.
     // v19: guests without a phone/email no longer need admin approval — they are tagged per guest.
     const needsApproval =
-      Boolean(orgSettings?.requireApproval) && ![Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE].includes(creatorRole as any);
+      Boolean(orgSettings?.requireApproval) && ![Role.ADMIN, Role.SUPER_ADMIN].includes(creatorRole as any);
     const expectedAt = parseAppDateTime(dto.expectedAt);
     if (dto.expectedAt && !expectedAt) throw new BadRequestException('Expected date/time is not valid');
     if (expectedAt && isPast(expectedAt)) throw new BadRequestException('The visit date and time cannot be in the past');
@@ -287,8 +235,7 @@ export class InvitesService {
     const ok =
       invite.hostId === actor.id ||
       (actor.role === Role.ADMIN && invite.organisationId === actor.orgId) ||
-      actor.role === Role.SUPER_ADMIN ||
-      actor.role === Role.GLOBAL_ADMIN;
+      actor.role === Role.SUPER_ADMIN;
     if (!ok) throw new ForbiddenException('Only the host or an admin can change this invite');
     return invite;
   }
@@ -421,56 +368,6 @@ export class InvitesService {
     return { ok: true, hostConfirmedAt: updated.hostConfirmedAt };
   }
 
-  /**
-   * Host ticks (confirm) or crosses (decline) a gate photo of a guest who had no email/phone.
-   * Each guest is independent — one decline never blocks a co-guest.
-   */
-  async reviewIdentity(visitorId: string, actor: { id: string; role: string; orgId: string }, confirm: boolean) {
-    const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: { include: { host: { select: { id: true, fullName: true } } } }, transfers: { orderBy: { createdAt: 'desc' }, take: 1 } } });
-    if (!visitor) throw new NotFoundException('Guest not found');
-    const last = visitor.transfers[0];
-    const ok =
-      visitor.invite.hostId === actor.id ||
-      last?.toHostId === actor.id ||
-      (actor.role === Role.ADMIN && visitor.invite.organisationId === actor.orgId) ||
-      actor.role === Role.SUPER_ADMIN ||
-      actor.role === Role.GLOBAL_ADMIN;
-    if (!ok) throw new ForbiddenException('Only the host can confirm this guest');
-    if (!visitor.gatePhotoPath) throw new BadRequestException('The gate has not sent a photo for this guest');
-    if (visitor.identityStatus !== 'PENDING') throw new BadRequestException(`Already ${String(visitor.identityStatus || 'not requested').toLowerCase()}`);
-    const now = new Date();
-    const updated = await this.prisma.visitor.update({
-      where: { id: visitorId },
-      data: confirm
-        ? { identityStatus: 'CONFIRMED', identityReviewedAt: now, identityReviewedById: actor.id, photoPath: visitor.gatePhotoPath }
-        : { identityStatus: 'DECLINED', identityReviewedAt: now, identityReviewedById: actor.id, status: 'DENIED', deniedAt: now, deniedReason: 'Host did not confirm identity' },
-    });
-    if (visitor.identityRequestedById) {
-      await this.notifications.create({
-        userId: visitor.identityRequestedById,
-        title: confirm ? 'Identity confirmed' : 'Identity not confirmed',
-        body: `${visitor.invite.host.fullName} ${confirm ? 'confirmed' : 'did not confirm'} ${visitor.fullName}.`,
-        meta: { type: 'IDENTITY_RESULT', visitorId, inviteId: visitor.inviteId, confirmed: confirm, url: `/gate?code=${encodeURIComponent(visitor.invite.passphrase)}` },
-        channels: ['in_app'],
-      }).catch(() => {});
-    }
-    await this.audit.log({ action: confirm ? 'GUEST_IDENTITY_CONFIRMED' : 'GUEST_IDENTITY_DECLINED', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { guest: visitor.fullName, inviteId: visitor.inviteId } });
-    return { id: updated.id, identityStatus: updated.identityStatus, status: updated.status };
-  }
-
-  /** Identity requests waiting for this host. */
-  async pendingIdentity(actor: { id: string; role: string; orgId: string }) {
-    const where: any = { identityStatus: 'PENDING' };
-    if (actor.role === Role.ADMIN) where.invite = { organisationId: actor.orgId };
-    else if (actor.role !== Role.SUPER_ADMIN && actor.role !== Role.GLOBAL_ADMIN) where.invite = { hostId: actor.id };
-    const rows = await this.prisma.visitor.findMany({
-      where,
-      include: { invite: { select: { id: true, purpose: true, expectedAt: true, host: { select: { id: true, fullName: true } } } } },
-      orderBy: { identityRequestedAt: 'asc' },
-      take: 100,
-    });
-    return rows.map((v) => ({ id: v.id, fullName: v.fullName, gatePhotoPath: v.gatePhotoPath, identityStatus: v.identityStatus, identityRequestedAt: v.identityRequestedAt, invite: v.invite }));
-  }
 
   async findMyInvites(hostId: string) {
     return this.prisma.invite.findMany({
@@ -812,7 +709,4 @@ export class InvitesService {
     });
   }
 
-  async getPublicInviteInfo(token: string) {
-    return this.getByToken(token);
-  }
 }

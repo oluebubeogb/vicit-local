@@ -99,8 +99,9 @@ export class MailService {
 
   constructor(@Optional() private prisma?: PrismaService) {}
 
+  /** v33 intranet: nothing is mailed unless MAIL_ENABLED=true (and SMTP is configured). */
   private enabled() {
-    return Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM);
+    return String(process.env.MAIL_ENABLED || 'false').toLowerCase() === 'true' && Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM);
   }
 
   /**
@@ -262,8 +263,8 @@ export class MailService {
       return { ok: false, error: 'no recipient' };
     }
     if (!this.enabled()) {
-      this.logger.log(`[mail:disabled] SMTP_HOST/SMTP_FROM not set — skipped mail to=${opts.to} subject=${opts.subject}`);
-      return { ok: false, error: 'SMTP not configured' };
+      this.logger.log(`[mail:disabled] MAIL_ENABLED is off or SMTP not set — skipped mail to=${opts.to} subject=${opts.subject}`);
+      return { ok: false, error: 'Mail disabled' };
     }
     const b = opts.html ? null : await this.brand();
     const payload = {
@@ -414,151 +415,6 @@ export class MailService {
       'An administrator reset your password.',
     );
     return this.sendMail({ to, subject, text, html });
-  }
-
-  async sendInviteEmail(opts: {
-    to: string;
-    guestName: string;
-    hostName: string;
-    purpose: string;
-    link: string;
-    passphrase: string;
-    ttlMinutes: number;
-    expectedAt?: string | null;
-    orgName?: string;
-    organisationId?: string;
-  }) {
-    const b = await this.brand(opts.organisationId);
-    const subject = `${b.name} — You're invited: ${opts.purpose}`;
-    const when = opts.expectedAt ? fmtWhen(opts.expectedAt) : null;
-    const text = [
-      `Hello ${opts.guestName},`,
-      `You have been invited by ${opts.hostName}.`,
-      `Purpose: ${opts.purpose}`,
-      when ? `When: ${when}` : '',
-      `Register here: ${opts.link}`,
-      `Gate passphrase: ${opts.passphrase}`,
-      `Link expires in ${opts.ttlMinutes} minutes.`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-    const html = this.layout(
-      b,
-      subject,
-      `${this.heading(b, 'Visitor invitation', `Hello ${opts.guestName}`)}
-      ${this.p(`<strong>${esc(opts.hostName)}</strong>${opts.orgName ? ` at ${esc(opts.orgName)}` : ''} has invited you. Register in under a minute — take a quick photo and you will receive your gate QR code.`)}
-      ${this.facts(b, [
-        ['Purpose', opts.purpose],
-        ['Host', opts.hostName],
-        ['Date & time', when],
-      ])}
-      ${this.btn(b, opts.link, 'Complete registration')}
-      <p style="font-size:12px;color:#94a3b8;text-align:center;margin:0 0 6px;">Works on any phone or computer with a camera · link expires in ${esc(opts.ttlMinutes)} minutes</p>
-      ${this.codeBox(b, 'Gate passphrase (backup)', opts.passphrase, 'Tell the gate officer if your QR will not scan')}`,
-      `${opts.hostName} invited you — register to get your gate QR code.`,
-    );
-    return this.sendMail({ to: opts.to, subject, text, html });
-  }
-
-  async sendVisitorQrEmail(opts: {
-    to: string;
-    guestName: string;
-    hostName: string;
-    purpose: string;
-    passphrase: string;
-    /** Raw PNG bytes (preferred) */
-    qrPng?: Buffer;
-    /** Legacy: data:image/png;base64,... */
-    qrDataUrl?: string;
-    /** Public hosted PNG (fallback for clients that hide inline images) */
-    qrImageUrl?: string;
-    /** Visitor page link — QR is always shown there too */
-    registrationLink?: string;
-    orgName?: string;
-    organisationId?: string;
-    /** Descriptive attachment name, e.g. vicit-pass_ibe-okafor_2026-10-21.png */
-    qrFileName?: string;
-  }) {
-    const b = await this.brand(opts.organisationId);
-    const subject = `${b.name} — Your gate QR code: ${opts.purpose}`;
-    const fileName = opts.qrFileName || 'gate-qr.png';
-    const text = [
-      `Hello ${opts.guestName},`,
-      `Your photo registration is complete.`,
-      `Host: ${opts.hostName}`,
-      `Purpose: ${opts.purpose}`,
-      `Gate passphrase: ${opts.passphrase}`,
-      `Show the QR code in this email (attached as ${fileName}) or on your registration page at the gate.`,
-      opts.registrationLink ? `Your registration page (shows the QR): ${opts.registrationLink}` : '',
-      opts.qrImageUrl ? `QR image: ${opts.qrImageUrl}` : '',
-      `If the QR will not scan, tell the gate officer your passphrase.`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    // Embed QR as a CID inline attachment — data: URIs are blocked by Gmail, Outlook and
-    // many mobile clients; CID images render in Apple Mail (iPhone), Gmail and Outlook.
-    let png: Buffer | null = opts.qrPng || null;
-    if (!png) {
-      const match = (opts.qrDataUrl || '').match(/^data:image\/png;base64,(.+)$/i);
-      if (match) png = Buffer.from(match[1], 'base64');
-    }
-    const attachments: any[] = png
-      ? [
-          {
-            filename: fileName,
-            content: png,
-            cid: 'visitor-qr@vicit',
-            contentType: 'image/png',
-            contentDisposition: 'inline',
-          },
-        ]
-      : [];
-
-    // The pass PNG carries a caption under the code, so keep its real aspect ratio.
-    const qrW = 240;
-    const qrH = png && png.length > 24 ? Math.round((qrW * png.readUInt32BE(20)) / png.readUInt32BE(16)) : qrW;
-    // White padded cell with bgcolor attr so dark-mode clients keep the QR on white.
-    const qrBlock = png
-      ? `<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:22px auto 10px;">
-          <tr><td bgcolor="${tint(b.color, 0.92)}" style="background:${tint(b.color, 0.92)};background-image:linear-gradient(135deg,${tint(b.color, 0.88)} 0%,${tint(b.color2, 0.93)} 100%);padding:10px;border-radius:24px;">
-            <table role="presentation" cellpadding="0" cellspacing="0"><tr>
-              <td bgcolor="#ffffff" style="background:#ffffff;padding:14px;border-radius:16px;">
-                <img src="cid:visitor-qr@vicit" alt="Gate QR code" width="${qrW}" height="${qrH}"
-                  style="display:block;width:${qrW}px;height:${qrH}px;max-width:${qrW}px;background:#ffffff;border:0;outline:none;image-rendering:pixelated;" />
-              </td>
-            </tr></table>
-          </td></tr>
-        </table>`
-      : '';
-    const links: string[] = [];
-    if (opts.registrationLink) {
-      links.push(`<a href="${esc(opts.registrationLink)}" style="color:${b.color};font-weight:600;">open your registration page</a>`);
-    }
-    if (opts.qrImageUrl) {
-      links.push(`<a href="${esc(opts.qrImageUrl)}" style="color:${b.color};font-weight:600;">open the QR image</a>`);
-    }
-    const fallback = `<p style="text-align:center;color:#64748b;font-size:13px;margin:0 0 8px;">
-        ${png ? 'QR not showing?' : 'Your QR code is ready.'}
-        ${links.length ? ` You can ${links.join(' or ')}.` : ' Open your registration link to view it on your phone.'}
-        <br/>Tip: turn your screen brightness up at the gate.
-      </p>`;
-
-    const html = this.layout(
-      b,
-      subject,
-      `${this.heading(b, 'You are all set', `See you soon, ${opts.guestName}`)}
-      ${this.p('Your photo is registered. Present this QR code at the gate when you arrive — the passphrase works as a backup.')}
-      ${qrBlock}
-      ${fallback}
-      ${this.codeBox(b, 'Gate passphrase', opts.passphrase)}
-      ${this.facts(b, [
-        ['Host', `${opts.hostName}${opts.orgName ? ` · ${opts.orgName}` : ''}`],
-        ['Purpose', opts.purpose],
-      ])}`,
-      'Your gate QR code is inside — show it on arrival.',
-    );
-    return this.sendMail({ to: opts.to, subject, text, html, attachments });
   }
 
   async sendHostVisitorUpdate(opts: {

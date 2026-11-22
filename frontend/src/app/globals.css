@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* v33: bundled locally (intranet, no font CDN). Inter, SIL OFL 1.1 — see /fonts/Inter-OFL.txt */
+@font-face {
+  font-family: 'Inter var';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter-var-latin.woff2') format('woff2');
+}
+
+
 /* ==========================================================================
    Vicit premium design system
    - brand / accent shades are CSS variables (overwritten live from Branding)

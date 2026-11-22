@@ -33,7 +33,7 @@ import Tooltip, { InfoTip } from '@/components/ui/Tooltip';
 import { Notice } from '@/components/ui/Bits';
 import PhotoGallery, { GalleryImage } from '@/components/PhotoGallery';
 import CaptureThumbGrid from '@/components/CaptureThumbGrid';
-import { InAppCallButton, PhoneCallLink } from '@/components/CallButtons';
+import { PhoneCallLink } from '@/components/CallButtons';
 import CheckpointTracker from '@/components/CheckpointTracker';
 import { GatePassPanel, TagsOutPanel, PassItemHistory, PassPdfButtons, PassPreviewSheet, hostDestination, type GatePassProtocol } from '@/components/GatePass';
 import { fmtDate, MODE_LABEL } from '@/lib/format';
@@ -91,10 +91,11 @@ export default function GatePage() {
   const [destination, setDestination] = useState('');
   const [hostPick, setHostPick] = useState<HostPick | null>(null);
   const [gallery, setGallery] = useState<{ images: GalleryImage[]; index: number } | null>(null);
-  const [ringNote, setRingNote] = useState<Record<string, string>>({});
   const [checkpointsFailed, setCheckpointsFailed] = useState(false);
   const [gatePlate, setGatePlate] = useState('');
-  const [ringBusy, setRingBusy] = useState(false);
+  const [commentDraft, setCommentDraft] = useState<{ inviteId: string; text: string } | null>(null);
+  const [commentBusy, setCommentBusy] = useState(false);
+  const [commentSaved, setCommentSaved] = useState(false);
   const [scrollNonce, setScrollNonce] = useState(0);
   const [passPreviewIds, setPassPreviewIds] = useState<string[]>([]);
   const guestInfoRef = useRef<HTMLDivElement>(null);
@@ -248,17 +249,6 @@ export default function GatePage() {
     }
   }
 
-  useEffect(() => {
-    const onRing = (ev: Event) => {
-      const call = (ev as CustomEvent).detail;
-      const id = call?.visitor?.id;
-      if (!id) return;
-      const label = call.status === 'RINGING' ? 'Ringing' : call.status === 'ACCEPTED' ? 'Answered' : call.status === 'DECLINED' ? 'Declined' : call.status === 'BUSY' ? 'Busy' : call.status === 'MISSED' ? 'No answer' : call.status === 'ENDED' ? 'Call ended' : '';
-      setRingNote((m) => ({ ...m, [id]: label }));
-    };
-    window.addEventListener('vicit:ring', onRing);
-    return () => window.removeEventListener('vicit:ring', onRing);
-  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(async () => {
@@ -699,16 +689,11 @@ export default function GatePage() {
   const activeGate = gateById(activeGateId);
   const MODES = useEntryModes(result?.allowedEntryModes);
   const cancelled = !!result?.cancelled;
-  const noContactGuests = (result?.visitors || []).filter((v: any) => isNoContact(v) && (v.gatePhotoPath || (!v.photoPath && v.status === 'INVITED')));
+  const noContactGuests = (result?.visitors || []).filter((v: any) => v.status === 'INVITED');
   const refreshSilently = async () => { await lookup(undefined, { silent: true }); };
   // One call row per visit, next to the host — works before any guest is checked in.
-  const canCallHost = ['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(String(currentRole)) && !!result?.host?.id;
   const visitGuests: any[] = result?.visitors || [];
-  const ringVisitor = visitGuests.find((v: any) => v.status === 'ARRIVED') || visitGuests.find((v: any) => !['CANCELLED', 'DENIED'].includes(v.status)) || visitGuests[0] || null;
   const arrivedGuest = visitGuests.find((v: any) => v.status === 'ARRIVED');
-  const hostAvail = arrivedGuest?.hostAvailabilityStatus;
-  const hostStatus = (ringVisitor && ringNote[ringVisitor.id]) || (hostAvail === 'AVAILABLE' ? 'Available' : hostAvail === 'WAITING' ? 'Waiting' : arrivedGuest ? 'No answer yet' : 'Not called');
-  const hostTone = hostStatus === 'Available' || hostStatus === 'Answered' ? 'bg-emerald-100 text-emerald-800' : hostStatus === 'Waiting' || hostStatus === 'Ringing' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600';
   // v22 gate pass protocol
   const passProtocol: GatePassProtocol = (result?.gatePassProtocol as GatePassProtocol) || 'NONE';
   const isFirstGateOfRoute = (g: any) => !!g && !routeGates.some((o: any) => o.locationId === g.locationId && o.sequence < g.sequence);
@@ -907,49 +892,57 @@ export default function GatePage() {
 
       {result && result.kind !== 'staff' && result.kind !== 'contractor' && (
         <div className="scroll-mt-20 space-y-3" ref={guestInfoRef} id="gate-guest-info" data-testid="gate-guest-info">
-          <div className="card card-art p-4">
-            <div className="flex items-start gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand-50 to-brand-100 text-brand-600">
-                <UserRound size={19} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] uppercase tracking-wider text-slate-400">Visiting</p>
-                <p className="font-semibold text-slate-900">
-                  {result.host?.external ? <span>{result.host.fullName}</span> : <PersonLink id={result.host?.id} name={result.host?.fullName} className="font-semibold" />}
-                </p>
-                {result.host?.external && <p className="text-[11px] text-slate-500">{[result.host.portfolio, result.host.phone].filter(Boolean).join(' · ')}{result.host.viaAdmin ? ` · via ${result.host.viaAdmin}` : ' · via admin'}</p>}
-                <p className="mt-0.5 text-sm text-slate-600">{result.purpose}</p>
-              </div>
-              {result.category && <StatusPill status={result.category} />}
-            </div>
-            {canCallHost && ringVisitor && (
-              <div className="mt-3 border-t border-slate-100 pt-3" data-testid="host-call-row">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Call the host</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${hostTone}`}>{hostStatus}</span>
+          {(() => {
+            const h = result.host || {};
+            const sub = [h.portfolio, h.phone, h.external ? `via ${h.viaAdmin || 'admin'}` : null].filter(Boolean).join(' · ');
+            const draft = commentDraft && commentDraft.inviteId === result.inviteId ? commentDraft.text : (result.gateComment || '');
+            const dirty = draft !== (result.gateComment || '');
+            return (
+              <div className="grid gap-3 md:grid-cols-2" data-testid="visiting-row">
+                <div className="flex items-start gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm" data-testid="visiting-card">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-600">
+                    <UserRound size={20} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">Visiting</p>
+                    <p className="font-bold text-slate-900">{h.displayName || h.fullName || '—'}</p>
+                    {sub && <p className="text-xs text-slate-500">{sub}</p>}
+                    <p className="mt-1 text-sm text-slate-600">{result.purpose}</p>
+                  </div>
+                  {result.category && <StatusPill status={result.category} />}
                 </div>
-                <div className="mt-2 flex gap-2">
-                  <InAppCallButton
-                    className="flex-1 !py-2 text-xs"
-                    disabled={ringBusy}
-                    label={ringBusy ? 'Calling…' : 'In-app call'}
-                    onClick={async () => {
-                      setRingBusy(true);
-                      try {
-                        const call = await api.startRing(ringVisitor.id, 'GATE_TO_HOST');
-                        window.dispatchEvent(new CustomEvent('vicit:ring-local', { detail: call }));
-                      } catch (e: any) {
-                        setError(e.message || 'Could not start the in-app call');
-                      } finally {
-                        setRingBusy(false);
-                      }
-                    }}
+                <div className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm" data-testid="gate-comment">
+                  <textarea
+                    className="input min-h-[72px] flex-1 resize-none text-sm"
+                    placeholder="Comment for this visit"
+                    value={draft}
+                    maxLength={1000}
+                    onChange={(e) => { setCommentSaved(false); setCommentDraft({ inviteId: result.inviteId, text: e.target.value }); }}
                   />
-                  <PhoneCallLink phone={result.host?.phone} className="flex-1 !py-2 text-xs" />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn-ghost !px-3 !py-2 text-xs"
+                      disabled={!dirty || commentBusy || !result.inviteId}
+                      onClick={async () => {
+                        setCommentBusy(true);
+                        try {
+                          await api.saveGateComment(result.inviteId, draft);
+                          setCommentSaved(true);
+                          setCommentDraft(null);
+                          await refreshSilently();
+                        } catch (e: any) { setError(e.message || 'Could not save the comment'); }
+                        finally { setCommentBusy(false); }
+                      }}
+                    >{commentBusy ? 'Saving…' : 'Save comment'}</button>
+                    {commentSaved && !dirty && <span className="text-[11px] text-emerald-700">Saved</span>}
+                    {result.gateCommentBy && !dirty && !commentSaved && <span className="truncate text-[11px] text-slate-400">by {result.gateCommentBy}</span>}
+                  </div>
+                  {h.phone ? <PhoneCallLink phone={h.phone} className="w-full !py-2.5 text-sm" /> : <p className="text-center text-[11px] text-slate-400">No phone number for the host</p>}
                 </div>
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {(result.appointments || []).length > 1 && (
             <div className="surface space-y-2 p-3">
@@ -982,7 +975,7 @@ export default function GatePage() {
 
           {currentCheckpoints.length > 1 && (
             <div className="flex items-center gap-2 rounded-2xl border border-brand-100 bg-brand-50/50 px-3 py-2" data-testid="station-picker">
-              <span className="shrink-0 text-xs font-semibold text-slate-600">You are at</span>
+              <span className="shrink-0 text-xs font-semibold text-slate-600">You are currently at</span>
               <select className="input min-w-0 flex-1 !py-1.5 text-sm font-semibold" value={currentCheckpoints.some((g: any) => g.id === activeGateId) ? activeGateId : ''} onChange={(e) => chooseStation(e.target.value)} aria-label="Your gate">
                 {!currentCheckpoints.some((g: any) => g.id === activeGateId) && <option value="">Choose your gate…</option>}
                 {currentCheckpoints.map((g: any) => <option key={g.id} value={g.id}>{g.groupName ? `${g.groupName} · ` : ""}{g.name}{g.location?.name ? ` · ${g.location.name}` : ''} · Checkpoint {(g.sequence ?? 0) + 1}</option>)}
@@ -990,6 +983,12 @@ export default function GatePage() {
             </div>
           )}
 
+          {currentCheckpoints.length === 1 && (
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2" data-testid="station-locked">
+              <span className="shrink-0 text-xs font-semibold text-slate-600">You are currently at</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-800">{currentCheckpoints[0].groupName ? `${currentCheckpoints[0].groupName} · ` : ''}{currentCheckpoints[0].name} · Checkpoint {(currentCheckpoints[0].sequence ?? 0) + 1}</span>
+            </div>
+          )}
           {routeGates.length > 0 && (result.visitors || []).length === 1 && (() => { const v0 = result.visitors[0]; return (
             <CheckpointTracker gates={guestTrackerGates(v0, routeGates)} visits={v0.gateVisits || []} direction={v0.status === 'ARRIVED' || v0.status === 'EXITED' ? 'both' : 'ENTRY'} activeGateId={guestStep(v0, routeGates).next?.id} />
           ); })()}
@@ -1136,14 +1135,10 @@ export default function GatePage() {
               </div>}
 
                 {v.status === 'INVITED' && !v.photoPath && !cancelled && (
-                  isNoContact(v) ? (
                     <button type="button" className="chip-action w-full !py-2.5" onClick={() => document.querySelector('[data-testid="no-contact-capture"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
                       <span className="chip-action-icon"><Camera size={13} /></span>
-                      {v.identityStatus === 'PENDING' ? 'Waiting for host to confirm photo' : v.gatePhotoPath && !result.host?.external ? 'Photo taken — send to host to confirm' : 'Take photo'}
+                      Take photo to admit
                     </button>
-                  ) : (
-                    <p className="tile-muted !py-2 text-center text-xs font-medium text-amber-700">Photo not captured yet — entry unlocks once the visitor adds a photo</p>
-                  )
                 )}
                 {v.status === 'ARRIVED' && (
                   <div className="w-full" data-testid="mark-exited">
@@ -1206,10 +1201,10 @@ export default function GatePage() {
                 {(v.status === 'INVITED' || v.status === 'ARRIVED') && !cancelled && routeGates.length > 0 && currentCheckpoints.length === 0 && (
                   <Notice tone="warn">No checkpoint on this route is assigned to your account. Contact an administrator.</Notice>
                 )}
-                {v.status === 'INVITED' && currentCheckpoints.length === 0 && !legacyAllowed && routeGates.length === 0 && ['GATE', 'GLOBAL_GATE'].includes(currentRole) && (
+                {v.status === 'INVITED' && currentCheckpoints.length === 0 && !legacyAllowed && routeGates.length === 0 && ['GATE'].includes(currentRole) && (
                   <Notice tone="warn">No checkpoint is assigned to your account for this agency or destination. Contact an administrator.</Notice>
                 )}
-                {v.status === 'INVITED' && !cancelled && legacyAllowed && !['GATE', 'GLOBAL_GATE'].includes(currentRole) && (
+                {v.status === 'INVITED' && !cancelled && legacyAllowed && !['GATE'].includes(currentRole) && (
                   <div className="flex w-full gap-2">
                     <button type="button" onClick={() => doEntry(v.id)} disabled={!!actionLoading || !v.photoPath} className="btn-success flex-1 !py-3">Permit entry</button>
                   </div>

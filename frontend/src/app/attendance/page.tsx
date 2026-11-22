@@ -156,7 +156,7 @@ export default function AttendanceRegisterPage() {
       router.replace('/login');
       return;
     }
-    const isPlatform = u.role === 'SUPER_ADMIN' || u.role === 'GLOBAL_ADMIN';
+    const isPlatform = u.role === 'SUPER_ADMIN';
     if (!isPlatform && u.role !== 'ADMIN') {
       router.replace('/dashboard');
       return;

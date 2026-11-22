@@ -22,7 +22,7 @@ export class PlatformService {
 
   private assertPermission(actor: any, permission: string) {
     if (actor.role === Role.SUPER_ADMIN) return;
-    if (actor.role !== Role.GLOBAL_ADMIN || !(actor.permissions || []).includes(permission)) throw new ForbiddenException('You do not have permission to perform this platform action');
+    throw new ForbiddenException('You do not have permission to perform this platform action');
   }
 
 
@@ -190,14 +190,10 @@ export class PlatformService {
       // Explicitly type these collections as Role[] so TypeScript does not
       // narrow Array.includes() to a smaller enum-literal union.
       const agencyRoles: Role[] = [Role.ADMIN, Role.STAFF, Role.GATE];
-      const globalRoles: Role[] = [Role.GLOBAL_ADMIN, Role.GLOBAL_GATE];
       const requestedRole = role as Role;
-      if (agencyRoles.includes(target.role) && !agencyRoles.includes(requestedRole)) throw new BadRequestException('Agency accounts can only use agency roles');
-      if (globalRoles.includes(target.role) && !globalRoles.includes(requestedRole)) throw new BadRequestException('Platform accounts can only use platform roles');
-      if (![...agencyRoles, ...globalRoles].includes(requestedRole)) throw new BadRequestException('Unsupported account role');
+      if (!agencyRoles.includes(requestedRole)) throw new BadRequestException('Unsupported account role');
       data.role = requestedRole;
     }
-    if (target.role === Role.GLOBAL_ADMIN && Array.isArray(input.permissions)) data.permissions = input.permissions.filter((p: string) => GLOBAL_PERMISSIONS.includes(p));
     const finalRole = (data.role ?? target.role) as Role;
     const gateIds = input.gateIds !== undefined && target.organisationId ? await validateGateIds(this.prisma, target.organisationId, input.gateIds) : undefined;
     if (gateIds?.length && finalRole !== Role.GATE) throw new BadRequestException('Only gate officers can be assigned to gates or checkpoints');
@@ -212,28 +208,6 @@ export class PlatformService {
     const [withGates] = await withGateAssignments(this.prisma, [updated]);
     return withGates;
   }
-
-  async createGlobalAdmin(actor: any, input: any) {
-    if (isSingleAgency()) throw new ForbiddenException('Super Admin II is not used in a single-agency install');
-    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only the Super Admin can appoint Super Admin II accounts');
-    const fullName = String(input.fullName || '').trim();
-    const email = String(input.email || '').trim().toLowerCase();
-    const phone = String(input.phone || '').trim();
-    if (!fullName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Name and valid email are required');
-    if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('Email already registered');
-    const homeOrg = await this.prisma.organisation.findUnique({ where: { id: actor.orgId } });
-    if (!homeOrg) throw new NotFoundException('Platform organisation not found');
-    const allowed = Array.isArray(input.permissions) ? input.permissions.filter((p: string) => GLOBAL_PERMISSIONS.includes(p)) : GLOBAL_PERMISSIONS;
-    const initialPassword = generateNigerianPassword();
-    const passwordHash = await bcrypt.hash(initialPassword, 12);
-    const user = await this.prisma.user.create({ data: { email, fullName, phone: phone || null, passwordHash, role: Role.GLOBAL_ADMIN, permissions: allowed, organisationId: homeOrg.id, mustChangePassword: true }, select: userSelect });
-    const mailResult = await this.mail.sendWelcome(email, fullName, initialPassword);
-    await this.audit.log({ action: 'GLOBAL_ADMIN_CREATED', entity: 'User', entityId: user.id, userId: actor.id, details: { email, permissions: allowed } });
-    return { user, emailSent: !!mailResult?.ok, ...(showTempInAdmin() ? { initialPassword } : {}) };
-  }
-
-
-
 
   async uploadAgencyLogo(actor: any, agencyId: string, file: Express.Multer.File) {
     this.assertPermission(actor, 'agencies.create');
@@ -341,7 +315,7 @@ export class PlatformService {
   /* ------------------------------------------------------------ custom fields (per agency) */
 
   async listCustomFields(actor: any, agencyId: string) {
-    if (![Role.SUPER_ADMIN, Role.GLOBAL_ADMIN].includes(actor.role) && actor.orgId !== agencyId) throw new ForbiddenException();
+    if (![Role.SUPER_ADMIN].includes(actor.role) && actor.orgId !== agencyId) throw new ForbiddenException();
     return this.prisma.agencyCustomField.findMany({ where: { organisationId: agencyId }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
   }
 
@@ -422,40 +396,6 @@ export class PlatformService {
     return this.prisma.gate.findMany({ include: { location: { include: { organisation: { select: { id: true, name: true, code: true } } } }, assignments: { include: { user: { select: { id: true, fullName: true, email: true, role: true } } } } }, orderBy: [{ location: { organisationId: 'asc' } }, { sequence: 'asc' }] });
   }
 
-  async assignGlobalGate(actor: any, gateId: string, userId: string) {
-    this.assertPermission(actor, 'gates.manage');
-    const [gate, officer] = await Promise.all([this.prisma.gate.findUnique({ where: { id: gateId }, include: { location: true } }), this.prisma.user.findUnique({ where: { id: userId } })]);
-    if (!gate || !officer || officer.role !== Role.GLOBAL_GATE) throw new NotFoundException('Gate or global gate officer not found');
-    const assignment = await this.prisma.gateOfficerAssignment.upsert({ where: { gateId_userId: { gateId, userId } }, update: {}, create: { gateId, userId } });
-    await this.audit.log({ action: 'GLOBAL_GATE_ASSIGNED', entity: 'Gate', entityId: gateId, userId: actor.id, details: { officerId: userId, agencyId: gate.location.organisationId } });
-    return assignment;
-  }
-
-  async globalAdmins(actor: any) {
-    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException();
-    return this.prisma.user.findMany({ where: { role: { in: [Role.GLOBAL_ADMIN, Role.GLOBAL_GATE] } }, select: userSelect, orderBy: { createdAt: 'desc' } });
-  }
-
-
-  async globalGateOfficers(actor: any) {
-    this.assertPermission(actor, 'gates.manage');
-    return this.prisma.user.findMany({ where: { role: Role.GLOBAL_GATE }, select: userSelect, orderBy: { createdAt: 'desc' } });
-  }
-
-  async createGlobalGate(actor: any, input: any) {
-    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException();
-    const fullName = String(input.fullName || '').trim();
-    const email = String(input.email || '').trim().toLowerCase();
-    if (!fullName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Name and valid email are required');
-    if (await this.prisma.user.findUnique({ where: { email } })) throw new ConflictException('Email already registered');
-    const initialPassword = generateNigerianPassword();
-    const passwordHash = await bcrypt.hash(initialPassword, 12);
-    const user = await this.prisma.user.create({ data: { email, fullName, phone: input.phone || null, passwordHash, role: Role.GLOBAL_GATE, organisationId: actor.orgId, mustChangePassword: true }, select: userSelect });
-    const mailResult = await this.mail.sendWelcome(email, fullName, initialPassword);
-    await this.audit.log({ action: 'GLOBAL_GATE_CREATED', entity: 'User', entityId: user.id, userId: actor.id, details: { email } });
-    return { user, emailSent: !!mailResult?.ok, ...(showTempInAdmin() ? { initialPassword } : {}) };
-  }
-
   async resetPersonPassword(actor: any, userId: string) {
     if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only the Super Admin can reset platform or agency passwords');
     const target = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -466,15 +406,5 @@ export class PlatformService {
     const mailResult = await this.mail.sendPasswordReset(target.email, target.fullName, initialPassword, undefined, (target.role === Role.ADMIN || target.role === Role.STAFF || target.role === Role.GATE) ? target.organisationId : undefined);
     await this.audit.log({ action: 'PLATFORM_PASSWORD_RESET', entity: 'User', entityId: userId, userId: actor.id, details: { targetRole: target.role, email: target.email } });
     return { userId, email: target.email, fullName: target.fullName, emailSent: !!mailResult?.ok, ...(showTempInAdmin() ? { initialPassword } : {}) };
-  }
-
-  async setUserActive(actor: any, userId: string, isActive: boolean) {
-    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException();
-    if (userId === actor.id) throw new BadRequestException('You cannot suspend your own account');
-    const target = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!target || (target.role !== Role.GLOBAL_ADMIN && target.role !== Role.GLOBAL_GATE)) throw new NotFoundException('Platform user not found');
-    const updated = await this.prisma.user.update({ where: { id: userId }, data: { isActive }, select: userSelect });
-    await this.audit.log({ action: isActive ? 'PLATFORM_USER_ACTIVATED' : 'PLATFORM_USER_SUSPENDED', entity: 'User', entityId: userId, userId: actor.id });
-    return updated;
   }
 }

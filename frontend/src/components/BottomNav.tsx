@@ -62,7 +62,7 @@ export default function BottomNav() {
     return null;
   }
 
-  const isGate = role === 'GATE' || role === 'GLOBAL_GATE';
+  const isGate = role === 'GATE';
   const { primary, more } = buildMobileNav(role, getUser()?.permissions || [], { superAdminCanInvite: (brand as any)?.superAdminCanInvite });
   const moreActive = more.some((l) => pathname === l.href || pathname?.startsWith(l.href + '/'));
   const slots: Array<AppNavLink | { href: '__more__'; icon: typeof Ellipsis; label: string; exact?: boolean; badge?: boolean }> =

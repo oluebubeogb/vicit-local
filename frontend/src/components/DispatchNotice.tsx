@@ -16,7 +16,7 @@ export default function DispatchNotice() {
     if (!getToken() || !user) return;
     // Super Admin / gate officers should not be blocked by a receipt overlay while working elsewhere.
     // Hosts and agency admins see it when they have an outstanding receipt.
-    if (!['STAFF', 'ADMIN', 'GLOBAL_ADMIN'].includes(String(user.role))) return;
+    if (!['STAFF', 'ADMIN'].includes(String(user.role))) return;
     try {
       const rows = await api.dispatchInbox();
       const next = Array.isArray(rows) ? rows.find((r: any) => !r.acknowledgedAt) : null;

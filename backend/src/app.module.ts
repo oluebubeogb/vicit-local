@@ -15,7 +15,7 @@ import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { MailModule } from './modules/mail/mail.module';
 import { PlatformModule } from './modules/platform/platform.module';
-import { RingModule } from './modules/rings/ring.module';
+import { StreamModule } from './modules/stream/stream.module';
 import { ContractorsModule } from './modules/contractors/contractors.module';
 import { DispatchesModule } from './modules/dispatches/dispatches.module';
 import { RemindersModule } from './modules/reminders/reminders.module';
@@ -39,7 +39,7 @@ import { RemindersModule } from './modules/reminders/reminders.module';
     BrandingModule,
     HealthModule,
     PlatformModule,
-    RingModule,
+    StreamModule,
     ContractorsModule,
     RemindersModule,
     DispatchesModule,

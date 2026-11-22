@@ -12,7 +12,7 @@ import { relTime } from '@/lib/format';
 
 export default function BlacklistPage() {
   const viewer = getUser();
-  const platformBack = viewer?.role === 'SUPER_ADMIN' || viewer?.role === 'GLOBAL_ADMIN' ? '/platform/tools' : '/admin';
+  const platformBack = viewer?.role === 'SUPER_ADMIN' ? '/platform/tools' : '/admin';
   const [items, setItems] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ fullName: '', idNumber: '', phone: '', reason: '' });
@@ -35,7 +35,7 @@ export default function BlacklistPage() {
     e.preventDefault();
     try {
       await api.addBlacklist(form);
-      setMsg({ tone: 'success', text: viewer?.role === 'SUPER_ADMIN' || viewer?.role === 'GLOBAL_ADMIN' ? 'Added to the platform-wide blacklist — all agencies will be alerted on a match' : 'Added to blacklist — gate officers will be alerted on a match' });
+      setMsg({ tone: 'success', text: viewer?.role === 'SUPER_ADMIN' ? 'Added to the platform-wide blacklist — all agencies will be alerted on a match' : 'Added to blacklist — gate officers will be alerted on a match' });
       setShowForm(false);
       setForm({ fullName: '', idNumber: '', phone: '', reason: '' });
       load();

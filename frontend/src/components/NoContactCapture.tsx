@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Camera, Check, Loader2, PhoneOff, RefreshCw, Send, SwitchCamera, UserRound, X } from 'lucide-react';
+import { Camera, Check, Loader2, RefreshCw, SwitchCamera, UserRound } from 'lucide-react';
 import clsx from 'clsx';
 import SleekOverlay from '@/components/ui/SleekOverlay';
 import CaptureThumbGrid from '@/components/CaptureThumbGrid';
@@ -17,9 +17,9 @@ type Guest = {
 };
 
 /**
- * Gate photo capture for guests who had no email (so never got a registration link).
- * Grid of placeholder cards → live camera → "Send to host to confirm identity" → the host ticks / crosses
- * each person. Polls every 5 s while anyone is waiting. Each guest is independent.
+ * v33: the only guest photo — a live photo taken by the gate officer before entry.
+ * Grid of guest cards → live camera → saved as the guest's photo (never sent to the host).
+ * Retake is allowed until the guest is admitted.
  */
 export default function NoContactCapture({
   guests,
@@ -44,16 +44,7 @@ export default function NoContactCapture({
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const urls = useRef<string[]>([]);
 
-  const pending = guests.filter((g) => g.identityStatus === 'PENDING');
-  const captured = guests.filter((g) => g.identityStatus === 'CAPTURED' && g.gatePhotoPath && !g.photoPath);
-  const needsPhoto = (g: Guest) => !g.photoPath && g.status === 'INVITED' && g.identityStatus !== 'PENDING';
-
-  // Poll the host's ticks while anyone is waiting.
-  useEffect(() => {
-    if (!pending.length) return;
-    const t = window.setInterval(() => { Promise.resolve(onChanged()).catch(() => {}); }, 5000);
-    return () => window.clearInterval(t);
-  }, [pending.length, onChanged]);
+  const needsPhoto = (g: Guest) => g.status === 'INVITED';
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -126,7 +117,7 @@ export default function NoContactCapture({
       await onChanged();
       // Auto-advance to the next guest still without a photo.
       const order = guests.map((g) => g.id);
-      const next = guests.find((g, i) => i > order.indexOf(guest.id) && needsPhoto(g) && !g.gatePhotoPath) || guests.find((g) => g.id !== guest.id && needsPhoto(g) && !g.gatePhotoPath);
+      const next = guests.find((g, i) => i > order.indexOf(guest.id) && !g.photoPath) || guests.find((g) => g.id !== guest.id && !g.photoPath);
       if (next) {
         setTarget(next.id);
         cardRefs.current[next.id]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -138,42 +129,28 @@ export default function NoContactCapture({
     }
   }
 
-  async function sendToHost() {
-    setBusy('send');
-    try {
-      await api.requestIdentity(captured.map((g) => g.id));
-      await onChanged();
-    } catch (e: any) {
-      onError(e.message || 'Could not send to host');
-    } finally {
-      setBusy('');
-    }
-  }
-
   const current = guests.find((g) => g.id === target);
-  const missingCount = guests.filter((g) => needsPhoto(g) && !g.gatePhotoPath).length;
+  const missingCount = guests.filter((g) => !g.photoPath).length;
 
   return (
     <section className="surface space-y-3 !p-3" data-testid="no-contact-capture">
       <div className="flex items-start gap-2.5">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
-          <PhoneOff size={17} />
+          <Camera size={17} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-slate-800">{guests.length === 1 ? 'No phone guest (no email)' : 'No phone guests (no email)'}</p>
-          <p className="text-xs text-slate-500">No registration link reached {guests.length === 1 ? 'them' : 'these guests'}. Take a live photo, then send to the host to confirm who they are.</p>
+          <p className="text-sm font-semibold text-slate-800">Guest photo</p>
+          <p className="text-xs text-slate-500">Take a live photo of each guest before entry.</p>
         </div>
       </div>
 
       <div className={clsx('grid gap-2.5', guests.length === 1 ? 'grid-cols-1 sm:max-w-[220px]' : 'grid-cols-2 sm:grid-cols-3')}>
         {guests.map((g) => {
-          const img = g.photoPath || g.gatePhotoPath;
-          const st = g.identityStatus;
-          const confirmed = st === 'CONFIRMED' || (!!g.photoPath && !!g.gatePhotoPath);
-          const declined = st === 'DECLINED' || g.status === 'DENIED';
-          const canShoot = !disabled && needsPhoto(g) && !declined;
+          const img = g.photoPath;
+          const confirmed = !!g.photoPath;
+          const canShoot = !disabled && needsPhoto(g);
           return (
-            <div key={g.id} ref={(el) => { cardRefs.current[g.id] = el; }} className={clsx('overflow-hidden rounded-2xl border bg-white shadow-sm transition', target === g.id ? 'border-brand-300 ring-2 ring-brand-200' : confirmed ? 'border-emerald-200' : declined ? 'border-rose-200' : 'border-slate-200')}>
+            <div key={g.id} ref={(el) => { cardRefs.current[g.id] = el; }} className={clsx('overflow-hidden rounded-2xl border bg-white shadow-sm transition', target === g.id ? 'border-brand-300 ring-2 ring-brand-200' : confirmed ? 'border-emerald-200' : 'border-slate-200')}>
               <button type="button" disabled={!canShoot} onClick={() => open(g.id)} className="group relative block w-full disabled:cursor-default" aria-label={img ? `Retake photo of ${g.fullName}` : `Take photo of ${g.fullName}`}>
                 {img ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -184,9 +161,7 @@ export default function NoContactCapture({
                     <span className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-brand-700 shadow-sm ring-1 ring-brand-100 group-hover:bg-brand-50"><Camera size={12} /> Take photo</span>
                   </span>
                 )}
-                {confirmed && <span className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500 text-white shadow ring-2 ring-white" aria-label="Host confirmed"><Check size={16} strokeWidth={3} /></span>}
-                {declined && <span className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-rose-500 text-white shadow ring-2 ring-white" aria-label="Host declined"><X size={16} strokeWidth={3} /></span>}
-                {st === 'PENDING' && <span className="absolute inset-x-2 bottom-2 inline-flex items-center justify-center gap-1 rounded-full bg-slate-900/75 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur"><Loader2 size={11} className="animate-spin" /> Waiting for host</span>}
+                {confirmed && <span className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500 text-white shadow ring-2 ring-white" aria-label="Photo taken"><Check size={16} strokeWidth={3} /></span>}
                 {canShoot && img && <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold text-slate-700 shadow"><RefreshCw size={10} /> Retake</span>}
               </button>
               <p className="truncate px-2.5 py-2 text-center text-xs font-semibold text-slate-700">{g.fullName}</p>
@@ -195,18 +170,10 @@ export default function NoContactCapture({
         })}
       </div>
 
-      <div className="flex flex-col gap-2 sm:flex-row">
-        {missingCount > 0 && (
-          <button type="button" className="btn-ghost flex-1" disabled={disabled} onClick={() => { const first = guests.find((g) => needsPhoto(g) && !g.gatePhotoPath); if (first) open(first.id); }}>
-            <Camera size={16} /> Take photo{missingCount > 1 ? 's' : ''}
-          </button>
-        )}
-        <button type="button" className="btn-primary flex-1" disabled={disabled || !captured.length || busy === 'send'} onClick={sendToHost} data-testid="send-to-host">
-          {busy === 'send' ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />} Send to host to confirm identity{captured.length > 1 ? ` (${captured.length})` : ''}
+      {missingCount > 0 && (
+        <button type="button" className="btn-primary w-full" disabled={disabled} onClick={() => { const first = guests.find((g) => !g.photoPath); if (first) open(first.id); }}>
+          <Camera size={16} /> Take photo{missingCount > 1 ? 's' : ''}
         </button>
-      </div>
-      {pending.length > 0 && (
-        <p className="flex items-center justify-center gap-1.5 text-[11px] font-medium text-slate-500"><Loader2 size={12} className="animate-spin" /> Waiting for the host — this updates automatically.</p>
       )}
 
       <SleekOverlay

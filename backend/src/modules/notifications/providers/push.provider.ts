@@ -5,7 +5,7 @@ import webpush = require('web-push');
  * Standard Web Push (VAPID) sender for installed PWAs and desktop browsers.
  *
  * Env:
- *  - ENABLE_PUSH=false            explicitly turn sending off (default is on)
+ *  - ENABLE_PUSH=true             turn sending on (default is off on the intranet)
  *  - VAPID_PUBLIC_KEY             URL-safe base64 public key
  *  - VAPID_PRIVATE_KEY            URL-safe base64 private key (SECRET)
  *  - VAPID_SUBJECT                mailto: or https: contact, default mailto:support@vicit.local
@@ -28,8 +28,9 @@ function truthyOff(v?: string) {
   return ['0', 'false', 'no', 'off'].includes(String(v || '').trim().toLowerCase());
 }
 
+/** v33 intranet: push is off unless ENABLE_PUSH=true (web push needs the internet). */
 export function pushEnabledFlag() {
-  return !truthyOff(process.env.ENABLE_PUSH);
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.ENABLE_PUSH || '').trim().toLowerCase());
 }
 
 function ensureConfigured() {

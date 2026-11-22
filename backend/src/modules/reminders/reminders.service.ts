@@ -131,25 +131,13 @@ export class RemindersService implements OnModuleInit, OnModuleDestroy {
           button: base ? { href: `${base}/notifications`, label: 'Confirm or postpone' } : null,
         }).catch(() => null);
       }
-      for (const v of guests) {
-        if (!v.email) continue;
-        await this.mail.sendNotice({
-          to: v.email,
-          organisationId: invite.organisationId,
-          subject: `Reminder: your visit ${lead}`,
-          eyebrow: kind === 'DAY' ? 'Tomorrow' : 'In 1 hour',
-          title: `Hello ${v.fullName}, see you ${lead}`,
-          paragraphs: [`${invite.host.fullName} is expecting you for "${invite.purpose}".`, v.photoPath ? 'Show your gate QR code on arrival.' : 'Please complete your registration (a quick photo) before you arrive.'],
-          facts: [['Date & time', when], ['Host', invite.host.fullName], ['Gate passphrase', invite.passphrase]],
-          button: base ? { href: `${base}/visitor/${invite.token}`, label: v.photoPath ? 'View my gate pass' : 'Complete registration' } : null,
-        }).catch(() => null);
-      }
+      // v33: guests are never emailed (intranet; no registration link).
     }
     await this.audit.log({
       action: 'INVITE_REMINDER_SENT',
       entity: 'Invite',
       entityId: inviteId,
-      details: { kind, expectedAt: invite.expectedAt.toISOString(), guestsEmailed: this.mail.isEnabled() ? guests.filter((g) => g.email).length : 0, smtp: this.mail.isEnabled() },
+      details: { kind, expectedAt: invite.expectedAt.toISOString(), guestsEmailed: 0, smtp: this.mail.isEnabled() },
     }).catch(() => {});
   }
 }

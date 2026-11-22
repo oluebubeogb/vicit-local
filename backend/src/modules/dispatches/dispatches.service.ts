@@ -27,11 +27,11 @@ export class DispatchesService {
   }
 
   private canOperate(actor: any) {
-    return ['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN', 'GLOBAL_ADMIN'].includes(actor?.role);
+    return ['GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor?.role);
   }
 
   private scopeWhere(actor: any) {
-    if (isPlatformRole(actor.role) || actor.role === 'GLOBAL_ADMIN') return {};
+    if (isPlatformRole(actor.role)) return {};
     return {
       OR: [
         { createdById: actor.id },
@@ -56,10 +56,10 @@ export class DispatchesService {
   async one(actor: any, id: string) {
     const row = await this.prisma.dispatch.findUnique({ where: { id }, include: INCLUDE });
     if (!row) throw new NotFoundException('Dispatch not found');
-    if (!isPlatformRole(actor.role) && actor.role !== 'GLOBAL_ADMIN' && !this.canOperate(actor)) {
+    if (!isPlatformRole(actor.role) && !this.canOperate(actor)) {
       const mine = row.destinations.some((d) => d.hostId === actor.id);
       if (!mine) throw new ForbiddenException();
-    } else if (!isPlatformRole(actor.role) && actor.role !== 'GLOBAL_ADMIN') {
+    } else if (!isPlatformRole(actor.role)) {
       const mine = row.createdById === actor.id || row.destinations.some((d) => d.organisationId === actor.orgId || d.hostId === actor.id);
       if (!mine) throw new NotFoundException('Dispatch not found');
     }
@@ -68,7 +68,7 @@ export class DispatchesService {
   }
 
   async create(actor: any, body: any) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(actor.role)) {
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) {
       throw new ForbiddenException('Only gate officers can register a dispatch');
     }
     const courierName = String(body.courierName || '').trim();
@@ -145,7 +145,7 @@ export class DispatchesService {
   }
 
   async mark(actor: any, id: string, status: 'DELIVERED' | 'EXITED') {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(actor.role)) throw new ForbiddenException();
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException();
     const row = await this.prisma.dispatch.findUnique({ where: { id }, include: INCLUDE });
     if (!row) throw new NotFoundException('Dispatch not found');
     if (row.requireApproval && row.status === 'AWAITING_APPROVAL') {
@@ -158,7 +158,7 @@ export class DispatchesService {
   }
 
   async uploadPhoto(actor: any, file: Express.Multer.File) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(actor.role)) throw new ForbiddenException();
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException();
     const ext = (path.extname(file.originalname) || '.jpg').toLowerCase().replace(/[^.a-z0-9]/g, '') || '.jpg';
     const filename = `dispatch-${uuidv4()}${ext}`;
     fs.writeFileSync(path.join(this.photoDir(), filename), file.buffer);

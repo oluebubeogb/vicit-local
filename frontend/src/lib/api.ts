@@ -63,6 +63,14 @@ function toQuery(params: Record<string, string | number | undefined | null>) {
   return q.toString();
 }
 
+let lastReachable = true;
+/** v33: tells the OfflineBanner whether the local API answered. */
+export function apiReachable(up: boolean) {
+  if (typeof window === 'undefined' || up === lastReachable) return;
+  lastReachable = up;
+  window.dispatchEvent(new CustomEvent('vicit:api', { detail: { up } }));
+}
+
 async function request(path: string, options: RequestInit = {}) {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -74,10 +82,18 @@ async function request(path: string, options: RequestInit = {}) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch (e) {
+    // v33: server unreachable (intranet down / device offline) → OfflineBanner
+    apiReachable(false);
+    throw new Error('Cannot reach the Vicit server. Check the network and try again.');
+  }
+  apiReachable(true);
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: res.statusText }));
@@ -112,28 +128,10 @@ export const api = {
     request('/invites', { method: 'POST', body: JSON.stringify(data) }),
   myInvites: () => request('/invites/mine'),
   allInvites: () => request('/invites'),
-  publicInvite: (token: string) => request(`/invites/public/${token}`),
-  resendInviteEmails: (id: string) => request(`/invites/${id}/resend-emails`, { method: 'POST' }),
   reviveInvite: (id: string) =>
     request(`/invites/${id}/revive`, { method: 'POST' }),
   approveOffline: (id: string) =>
     request(`/invites/${id}/approve-offline`, { method: 'POST' }),
-  uploadPhoto: async (token: string, visitorId: string, file: File) => {
-    const form = new FormData();
-    form.append('photo', file);
-    return request(`/visitors/${token}/${visitorId}/photo`, {
-      method: 'POST',
-      body: form,
-    });
-  },
-  /** v24: stage a photo for review (no QR yet), then confirm with "Proceed to QR code". */
-  stagePhoto: async (token: string, visitorId: string, file: File) => {
-    const form = new FormData();
-    form.append('photo', file);
-    return request(`/visitors/${token}/${visitorId}/photo/preview`, { method: 'POST', body: form });
-  },
-  confirmPhoto: (token: string, visitorId: string, pendingId: string) =>
-    request(`/visitors/${token}/${visitorId}/photo/confirm`, { method: 'POST', body: JSON.stringify({ pendingId }) }),
   gateLookup: (code: string, atGateId?: string) =>
     request(`/gate/lookup?code=${encodeURIComponent(code)}${atGateId ? `&atGateId=${encodeURIComponent(atGateId)}` : ''}`),
   gateVisits: (filter?: string, q?: string) => {
@@ -251,17 +249,11 @@ export const api = {
   resetPlatformPersonPassword: (id: string) => request(`/platform/people/${id}/reset-password`, { method: 'POST' }),
   uploadAgencyLogo: async (agencyId: string, file: File) => { const form = new FormData(); form.append('logo', file); return request(`/platform/agencies/${agencyId}/logo`, { method: 'POST', body: form }); },
   createAgencyUser: (agencyId: string, data: any) => request(`/platform/agencies/${agencyId}/users`, { method: 'POST', body: JSON.stringify(data) }),
-  platformAdministrators: () => request('/platform/administrators'),
   profileBuilder: () => request('/branding/platform/profile-builder'),
   profileBuilderSample: (userId: string) => request(`/branding/platform/profile-builder/sample/${userId}`),
   platformLocations: () => request('/platform/locations'),
   setPlatformLocationShared: (id: string, isShared: boolean) => request(`/platform/locations/${id}/shared`, { method: 'PATCH', body: JSON.stringify({ isShared }) }),
   platformGates: () => request('/platform/gates'),
-  assignGlobalGate: (gateId: string, userId: string) => request(`/platform/gates/${gateId}/global-officers/${userId}`, { method: 'POST' }),
-  createPlatformAdministrator: (data: any) => request('/platform/administrators', { method: 'POST', body: JSON.stringify(data) }),
-  platformGlobalGateOfficers: () => request('/platform/global-gate-officers'),
-  createGlobalGateOfficer: (data: any) => request('/platform/global-gate-officers', { method: 'POST', body: JSON.stringify(data) }),
-  setPlatformUserStatus: (id: string, isActive: boolean) => request(`/platform/administrators/${id}/status`, { method: 'PATCH', body: JSON.stringify({ isActive }) }),
   /** v25: Super Admin works on one agency's locations at a time (?orgId=). Agency admins ignore it. */
   setLocationsOrg: (orgId: string | null) => { locationsOrg = orgId; },
   locations: () => request(lq('/locations')),
@@ -354,23 +346,11 @@ export const api = {
   recordCheckpoint: (data: any) => request('/gate/checkpoint', { method: 'POST', body: JSON.stringify(data) }),
   hostArrivalResponse: (visitorId: string, available: boolean, waitMinutes?: number) => request(`/gate/host-response/${visitorId}`, { method: 'PATCH', body: JSON.stringify({ available, waitMinutes }) }),
   requestHostAvailability: (visitorId: string) => request(`/gate/host-prompt/${visitorId}`, { method: 'POST' }),
-  startRing: (visitorId: string, direction: 'GATE_TO_HOST' | 'HOST_TO_GATE') =>
-    request('/rings', { method: 'POST', body: JSON.stringify({ visitorId, direction }) }),
-  startDispatchRing: (dispatchId: string, hostId: string, direction: 'GATE_TO_HOST' | 'HOST_TO_GATE' = 'GATE_TO_HOST') =>
-    request('/rings', { method: 'POST', body: JSON.stringify({ dispatchId, hostId, direction }) }),
-  ringSignal: (id: string, payload: any) => request(`/rings/${id}/signal`, { method: 'POST', body: JSON.stringify(payload) }),
-  ringIceServers: () => request('/rings/ice-servers'),
-  ringAction: (id: string, action: 'accept' | 'decline' | 'busy' | 'cancel' | 'hangup') =>
-    request(`/rings/${id}`, { method: 'PATCH', body: JSON.stringify({ action }) }),
-  ring: (id: string) => request(`/rings/${id}`),
-  activeRing: () => request('/rings/active'),
-  recentRings: () => request('/rings/recent'),
-  ringCallback: (callId: string) => request('/rings/callback', { method: 'POST', body: JSON.stringify({ callId }) }),
+  saveGateComment: (inviteId: string, comment: string) => request(`/gate/invites/${inviteId}/comment`, { method: 'PATCH', body: JSON.stringify({ comment }) }),
   markExited: (visitorId: string, note: string) => request(`/gate/visitors/${visitorId}/mark-exited`, { method: 'POST', body: JSON.stringify({ note }) }),
   removeGatePoint: (gateId: string) => request(lq(`/locations/gates/${gateId}`), { method: 'DELETE' }),
   notificationStreamUrl: () => `${API_URL}/notifications/stream?token=${encodeURIComponent(getToken() || '')}`,
   setMyPreferences: (body: { notificationSound?: boolean }) => request('/users/me/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
-  ringStreamUrl: () => `${API_URL}/rings/stream?token=${encodeURIComponent(getToken() || '')}`,
   platformInvite: (id: string) => request(`/platform/invites/${id}`),
   exportCsv: (from?: string, to?: string, columns?: string[]) => {
     const q = new URLSearchParams();
@@ -405,10 +385,7 @@ export const api = {
   cancelInvite: (id: string, reason?: string) => request(`/invites/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
   postponeInvite: (id: string, expectedAt: string, note?: string) => request(`/invites/${id}/postpone`, { method: 'POST', body: JSON.stringify({ expectedAt, note }) }),
   confirmAvailability: (id: string) => request(`/invites/${id}/confirm-availability`, { method: 'POST' }),
-  pendingIdentity: () => request('/invites/identity/pending'),
-  reviewIdentity: (visitorId: string, confirm: boolean) => request(`/invites/visitors/${visitorId}/identity`, { method: 'POST', body: JSON.stringify({ confirm }) }),
   uploadGatePhoto: async (visitorId: string, blob: Blob) => { const form = new FormData(); form.append('photo', blob, 'gate-photo.jpg'); return request(`/gate/visitors/${visitorId}/gate-photo`, { method: 'POST', body: form }); },
-  requestIdentity: (visitorIds: string[]) => request('/gate/identity-request', { method: 'POST', body: JSON.stringify({ visitorIds }) }),
   reviewProfileEdit: (id: string, approve: boolean, note?: string) =>
     request(`/users/profile-edits/${id}/review`, {
       method: 'POST',

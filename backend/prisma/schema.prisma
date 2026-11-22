@@ -9,8 +9,6 @@ datasource db {
 
 enum Role {
   SUPER_ADMIN
-  GLOBAL_ADMIN
-  GLOBAL_GATE
   ADMIN
   STAFF
   GATE
@@ -72,43 +70,43 @@ enum ProfileEditStatus {
 }
 
 model Organisation {
-  id              String          @id @default(uuid())
-  name            String
-  code            String          @unique
+  id                          String                   @id @default(uuid())
+  name                        String
+  code                        String                   @unique
   // White-label
-  logoUrl         String?
-  primaryColor      String?         @default("#2563eb")
-  secondaryColor    String?         @default("#1e40af")
+  logoUrl                     String?
+  primaryColor                String?                  @default("#2563eb")
+  secondaryColor              String?                  @default("#1e40af")
   // Text colour on primary/brand surfaces; null = auto (white or dark for contrast)
-  primaryTextColor  String?
-  emailIconBg       String?         @default("#ffffff")
-  customDomain    String?
+  primaryTextColor            String?
+  emailIconBg                 String?                  @default("#ffffff")
+  customDomain                String?
   // Settings
-  requireApproval Boolean         @default(false)
-  requireDispatchHostApproval Boolean @default(false)
-  defaultWorkflow WorkflowType    @default(NONE)
-  photoRetentionDays Int          @default(90)
-  maxGates        Int             @default(10)
+  requireApproval             Boolean                  @default(false)
+  requireDispatchHostApproval Boolean                  @default(false)
+  defaultWorkflow             WorkflowType             @default(NONE)
+  photoRetentionDays          Int                      @default(90)
+  maxGates                    Int                      @default(10)
   /// Order of this agency on the public login grid (0 = first).
-  loginOrder      Int             @default(0)
+  loginOrder                  Int                      @default(0)
   /// When false the agency is hidden from the login page grid.
-  loginVisible    Boolean         @default(true)
+  loginVisible                Boolean                  @default(true)
   /// Short label on login tiles (e.g. "Navy"). Falls back to name.
-  shortName       String?
+  shortName                   String?
   /// Custom background for the public login tile. Null = Auto (glass / brand colour).
-  loginTileColor  String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  users           User[]
-  invites         Invite[]
-  locations       Location[]
-  staffAttendances StaffAttendance[]
-  blacklist       BlacklistEntry[]
-  workflows       ApprovalWorkflow[]
-  contractors     Contractor[]
-  contractorLinks ContractorOrganisation[]
-  dispatchDestinations DispatchDestination[]
-  customFieldDefs AgencyCustomField[]
+  loginTileColor              String?
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @updatedAt
+  users                       User[]
+  invites                     Invite[]
+  locations                   Location[]
+  staffAttendances            StaffAttendance[]
+  blacklist                   BlacklistEntry[]
+  workflows                   ApprovalWorkflow[]
+  contractors                 Contractor[]
+  contractorLinks             ContractorOrganisation[]
+  dispatchDestinations        DispatchDestination[]
+  customFieldDefs             AgencyCustomField[]
 }
 
 model Location {
@@ -127,162 +125,167 @@ model Location {
 }
 
 model Gate {
-  id         String   @id @default(uuid())
-  name       String
-  code       String
-  locationId String
-  location   Location @relation(fields: [locationId], references: [id])
-  isActive   Boolean  @default(true)
-  sequence   Int      @default(0)
+  id                      String                  @id @default(uuid())
+  name                    String
+  code                    String
+  locationId              String
+  location                Location                @relation(fields: [locationId], references: [id])
+  isActive                Boolean                 @default(true)
+  sequence                Int                     @default(0)
   /// v32: entry points. Gates at the same location + sequence are points of ONE gate
   /// (e.g. North Gate + South Gate of "Main Gate"); clearing at any point counts for all.
-  groupName  String?
-  admissionsEnabled Boolean @default(true)
-  particularsCheckEnabled Boolean @default(true)
-  dailyAdmissionLimit Int?
-  assignments GateOfficerAssignment[]
-  visits     GateVisit[]
-  passItems  GatePassItem[]
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  groupName               String?
+  admissionsEnabled       Boolean                 @default(true)
+  particularsCheckEnabled Boolean                 @default(true)
+  dailyAdmissionLimit     Int?
+  assignments             GateOfficerAssignment[]
+  visits                  GateVisit[]
+  passItems               GatePassItem[]
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
 
   @@unique([locationId, code])
 }
 
 model User {
-  id             String       @id @default(uuid())
-  email          String       @unique
-  passwordHash   String
-  fullName       String
-  role           Role         @default(STAFF)
-  portfolio      String?
-  phone          String?
-  avatarPath     String?
-  permissions    String[]     @default([])
-  isActive       Boolean      @default(true)
-  mustChangePassword Boolean   @default(true)
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id])
-  invites        Invite[]     @relation("HostInvites")
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  auditLogs      AuditLog[]
-  pushDevices    PushDevice[]
-  gateAssignments GateOfficerAssignment[]
-  gateVisits      GateVisit[]
-  createdParticulars GateParticular[]
+  id                  String                  @id @default(uuid())
+  email               String                  @unique
+  passwordHash        String
+  fullName            String
+  role                Role                    @default(STAFF)
+  portfolio           String?
+  phone               String?
+  avatarPath          String?
+  permissions         String[]                @default([])
+  isActive            Boolean                 @default(true)
+  mustChangePassword  Boolean                 @default(true)
+  organisationId      String
+  organisation        Organisation            @relation(fields: [organisationId], references: [id])
+  invites             Invite[]                @relation("HostInvites")
+  gateComments        Invite[]                @relation("GateComments")
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  auditLogs           AuditLog[]
+  pushDevices         PushDevice[]
+  gateAssignments     GateOfficerAssignment[]
+  gateVisits          GateVisit[]
+  createdParticulars  GateParticular[]
   /// Permanent non-guessable token encoded in the staff attendance QR
-  staffQrToken         String?   @unique
-  staffPinHash         String?
-  staffPinFailCount    Int       @default(0)
-  staffPinLockedUntil  DateTime?
+  staffQrToken        String?                 @unique
+  staffPinHash        String?
+  staffPinFailCount   Int                     @default(0)
+  staffPinLockedUntil DateTime?
   /// Live camera snap used on the printable staff badge (not the profile avatar)
-  staffBadgePhotoPath  String?
-  staffAttendances     StaffAttendance[] @relation("StaffAttendanceSubject")
-  scannedAttendances   StaffAttendance[] @relation("StaffAttendanceScanner")
+  staffBadgePhotoPath String?
+  staffAttendances    StaffAttendance[]       @relation("StaffAttendanceSubject")
+  scannedAttendances  StaffAttendance[]       @relation("StaffAttendanceScanner")
   /// Values for the agency's custom user fields, keyed by AgencyCustomField.key
-  customFields         Json?
+  customFields        Json?
   /// v31: play the two-note chime for new in-app notifications (on by default)
-  notificationSound    Boolean   @default(true)
+  notificationSound   Boolean                 @default(true)
 }
 
 model Invite {
-  id             String       @id @default(uuid())
-  token          String       @unique
-  passphrase     String
-  status         InviteStatus @default(PENDING)
-  purpose        String
-  category       InviteCategory @default(OFFICIAL)
-  guestCount     Int          @default(1)
-  guestNames     String[]
-  expectedMode   EntryMode?
-  expectedAt     DateTime?
-  expiresAt      DateTime
-  revivedAt      DateTime?
-  hostId         String
-  host           User         @relation("HostInvites", fields: [hostId], references: [id])
+  id                 String         @id @default(uuid())
+  token              String         @unique
+  passphrase         String
+  status             InviteStatus   @default(PENDING)
+  purpose            String
+  category           InviteCategory @default(OFFICIAL)
+  guestCount         Int            @default(1)
+  guestNames         String[]
+  expectedMode       EntryMode?
+  expectedAt         DateTime?
+  expiresAt          DateTime
+  revivedAt          DateTime?
+  hostId             String
+  host               User           @relation("HostInvites", fields: [hostId], references: [id])
   /// v32: paper request — host without an account. hostId is then the admin who created it (gets the alerts).
-  hostName       String?
-  hostPhone      String?
-  hostOffice     String?
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id])
-  locationId     String?
-  visitors       Visitor[]
-  isOffline      Boolean      @default(false)
-  approvedById   String?
-  workflowState  String?
+  hostName           String?
+  hostPhone          String?
+  hostOffice         String?
+  /// v33: gate officers' comment on the visit (Visiting card, column 2)
+  gateComment        String?
+  gateCommentAt      DateTime?
+  gateCommentById    String?
+  gateCommentBy      User?          @relation("GateComments", fields: [gateCommentById], references: [id], onDelete: SetNull)
+  organisationId     String
+  organisation       Organisation   @relation(fields: [organisationId], references: [id])
+  locationId         String?
+  visitors           Visitor[]
+  isOffline          Boolean        @default(false)
+  approvedById       String?
+  workflowState      String?
   /// Expected vehicle / motorcycle (only when expectedMode is VEHICLE or MOTORCYCLE)
-  vehiclePlate   String?
-  vehicleDetails String?
+  vehiclePlate       String?
+  vehicleDetails     String?
   /// Host (or admin) cancelled the invite. Status becomes REVOKED; the gate shows "Cancelled".
-  cancelledAt    DateTime?
-  cancelledById  String?
-  cancelReason   String?
-  postponedAt    DateTime?
-  postponeCount  Int          @default(0)
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancelReason       String?
+  postponedAt        DateTime?
+  postponeCount      Int            @default(0)
   /// Idempotent reminder flags (scheduler). Reset when the invite is postponed.
   reminderDaySentAt  DateTime?
   reminderHourSentAt DateTime?
   hostConfirmedAt    DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   @@index([expectedAt])
 }
 
 model Visitor {
-  id          String      @id @default(uuid())
-  inviteId    String
-  invite      Invite      @relation(fields: [inviteId], references: [id])
-  fullName    String
-  email       String?
-  phone       String?
-  address     String?
-  photoPath   String?
-  qrCodeData  String?
-  status      VisitStatus @default(INVITED)
-  entryMode   EntryMode?
-  enteredAt   DateTime?
-  exitedAt    DateTime?
+  id                     String          @id @default(uuid())
+  inviteId               String
+  invite                 Invite          @relation(fields: [inviteId], references: [id])
+  fullName               String
+  email                  String?
+  phone                  String?
+  address                String?
+  photoPath              String?
+  qrCodeData             String?
+  status                 VisitStatus     @default(INVITED)
+  entryMode              EntryMode?
+  enteredAt              DateTime?
+  exitedAt               DateTime?
   /// v32: officer marked the guest exited by hand (forgot to scan out); note says why
-  exitManual  Boolean   @default(false)
-  exitNote    String?
+  exitManual             Boolean         @default(false)
+  exitNote               String?
   /// v31: set once when the host was alerted that this guest stayed past the visit end
-  overstayNotifiedAt DateTime?
-  deniedAt    DateTime?
-  deniedReason String?
-  gateId      String?
-  entryById   String?
-  exitById    String?
-  gateNotes   String?
-  hostAvailabilityStatus String @default("PENDING")
-  hostWaitUntil DateTime?
-  hostRespondedAt DateTime?
-  lastHostPromptAt DateTime?
-  idNumber    String?
+  overstayNotifiedAt     DateTime?
+  deniedAt               DateTime?
+  deniedReason           String?
+  gateId                 String?
+  entryById              String?
+  exitById               String?
+  gateNotes              String?
+  hostAvailabilityStatus String          @default("PENDING")
+  hostWaitUntil          DateTime?
+  hostRespondedAt        DateTime?
+  lastHostPromptAt       DateTime?
+  idNumber               String?
   /// Shared same-day pass so one QR covers every invite for this person
-  passToken   String?
+  passToken              String?
   /// v24: when the current (latest) self-service photo was confirmed, and how many times it was retaken
-  photoTakenAt DateTime?
-  photoRetakes Int @default(0)
+  photoTakenAt           DateTime?
+  photoRetakes           Int             @default(0)
   /// Vehicle actually used at the gate
-  vehiclePlate   String?
-  vehicleDetails String?
+  vehiclePlate           String?
+  vehicleDetails         String?
   /// No-contact ("no phone") guests = no email: photo taken by the gate officer, confirmed by the host
-  gatePhotoPath        String?
+  gatePhotoPath          String?
   /// null | CAPTURED | PENDING | CONFIRMED | DECLINED
-  identityStatus       String?
-  identityRequestedAt  DateTime?
-  identityRequestedById String?
-  identityReviewedAt   DateTime?
-  identityReviewedById String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  gateVisits  GateVisit[]
-  passItems   GatePassItem[]
-  rings       RingCall[]
-  transfers   VisitTransfer[]
+  identityStatus         String?
+  identityRequestedAt    DateTime?
+  identityRequestedById  String?
+  identityReviewedAt     DateTime?
+  identityReviewedById   String?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  gateVisits             GateVisit[]
+  passItems              GatePassItem[]
+  transfers              VisitTransfer[]
 
   @@index([passToken])
 }
@@ -328,41 +331,6 @@ model AuditLog {
   createdAt DateTime @default(now())
 }
 
-/// In-app ring between a gate officer (or any initiator) and a host about one visitor or dispatch.
-model RingCall {
-  id                String    @id @default(uuid())
-  visitorId         String?
-  visitor           Visitor?  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
-  dispatchId        String?
-  fromUserId        String
-  toUserId          String
-  /// Logged-in account that placed this call (SA / SA II / super gate included).
-  callerUserId      String?
-  /// Intended answerer for this call (usually the host, or the initiator on a call-back).
-  calleeUserId      String?
-  /// Gate officer responsible: the initiator if they are a gate officer, else the officer on that gate.
-  gateOfficerUserId String?
-  parentCallId      String?
-  parentCall        RingCall?  @relation("RingCallback", fields: [parentCallId], references: [id], onDelete: SetNull)
-  callbacks         RingCall[] @relation("RingCallback")
-  direction         String
-  status            String    @default("RINGING")
-  gateId            String?
-  createdAt         DateTime  @default(now())
-  answeredAt        DateTime?
-  endedAt           DateTime?
-  /// Talk time in seconds (endedAt - answeredAt); 0 when the call never connected.
-  durationSec       Int?
-
-  @@index([toUserId, status])
-  @@index([calleeUserId, createdAt])
-  @@index([fromUserId, status])
-  @@index([visitorId, createdAt])
-  @@index([dispatchId])
-  @@index([parentCallId])
-  @@index([callerUserId, createdAt])
-}
-
 model Notification {
   id        String   @id @default(uuid())
   userId    String
@@ -402,7 +370,6 @@ model ProfileEditRequest {
   updatedAt      DateTime          @updatedAt
 }
 
-
 /// Officer-to-checkpoint assignments. Global gate officers may be assigned across agencies.
 model GateOfficerAssignment {
   id        String   @id @default(uuid())
@@ -411,49 +378,52 @@ model GateOfficerAssignment {
   createdAt DateTime @default(now())
   gate      Gate     @relation(fields: [gateId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@unique([gateId, userId])
   @@index([userId])
 }
 
 /// Immutable checkpoint event; a later denial never overwrites an earlier pass.
 model GateVisit {
-  id          String   @id @default(uuid())
-  visitorId   String
-  gateId      String
-  officerId   String
-  decision    String
-  particularsChecked Boolean @default(false)
-  evidencePhotos String[] @default([])
-  notes       String?
+  id                 String           @id @default(uuid())
+  visitorId          String
+  gateId             String
+  officerId          String
+  decision           String
+  particularsChecked Boolean          @default(false)
+  evidencePhotos     String[]         @default([])
+  notes              String?
   /// ENTRY (default) or EXIT — exit must also pass every checkpoint
-  direction   String   @default("ENTRY")
-  occurredAt  DateTime @default(now())
-  visitor     Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
-  gate        Gate     @relation(fields: [gateId], references: [id], onDelete: Restrict)
-  officer     User     @relation(fields: [officerId], references: [id], onDelete: Restrict)
-  particulars GateParticular[]
+  direction          String           @default("ENTRY")
+  occurredAt         DateTime         @default(now())
+  visitor            Visitor          @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  gate               Gate             @relation(fields: [gateId], references: [id], onDelete: Restrict)
+  officer            User             @relation(fields: [officerId], references: [id], onDelete: Restrict)
+  particulars        GateParticular[]
+
   @@index([visitorId, occurredAt])
   @@index([gateId, occurredAt])
 }
 
 model GateParticular {
-  id          String   @id @default(uuid())
-  gateVisitId String
-  kind        String   // WITHHELD or ALLOWED
-  description String
-  quantity    Int      @default(1)
-  imagePath   String?
-  returnedAt  DateTime?
-  returnedById String?
+  id             String    @id @default(uuid())
+  gateVisitId    String
+  kind           String // WITHHELD or ALLOWED
+  description    String
+  quantity       Int       @default(1)
+  imagePath      String?
+  returnedAt     DateTime?
+  returnedById   String?
   /// RETURNED | SEIZED | OTHER — required before the guest can exit
   resolution     String?
   resolutionNote String?
   resolvedAt     DateTime?
   resolvedById   String?
-  createdById String
-  createdAt   DateTime @default(now())
-  gateVisit   GateVisit @relation(fields: [gateVisitId], references: [id], onDelete: Cascade)
-  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdById    String
+  createdAt      DateTime  @default(now())
+  gateVisit      GateVisit @relation(fields: [gateVisitId], references: [id], onDelete: Cascade)
+  createdBy      User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
   @@index([gateVisitId])
 }
 
@@ -463,7 +433,7 @@ model StaffAttendance {
   id             String       @id @default(uuid())
   userId         String
   organisationId String
-  day            DateTime     /// Calendar date at 00:00 in the attendance timezone (stored as DateTime)
+  day            DateTime /// Calendar date at 00:00 in the attendance timezone (stored as DateTime)
   arrivedAt      DateTime
   exitedAt       DateTime?
   arrivalGateId  String?
@@ -474,82 +444,71 @@ model StaffAttendance {
   user           User         @relation("StaffAttendanceSubject", fields: [userId], references: [id], onDelete: Cascade)
   organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   scannedBy      User?        @relation("StaffAttendanceScanner", fields: [scannedById], references: [id], onDelete: SetNull)
+
   @@unique([userId, day])
   @@index([organisationId, day])
   @@index([day])
 }
 
-/// Tracks rows created (or attendance written) by the demo seed so `--reset` can
-/// remove only demo data, including attendance on pre-existing officers.
-model DemoSeedRecord {
-  id        String   @id @default(uuid())
-  model     String
-  recordId  String
-  createdAt DateTime @default(now())
-
-  @@unique([model, recordId])
-  @@index([model])
-}
-
 /// Singleton platform-level sign-in, footer, and contractor policy. Edited by Super Admin only.
 model PlatformSettings {
-  id                        String   @id @default("platform")
+  id                        String                 @id @default("platform")
   loginLogoUrl              String?
-  loginLogoWidth            String?  @default("180px")
+  loginLogoWidth            String?                @default("180px")
   loginWatermarkUrl         String?
-  loginWatermarkWidth       String?  @default("70vw")
-  loginWatermarkHeight      String?  @default("70vh")
-  loginWatermarkOpacity     Float    @default(0.08)
+  loginWatermarkWidth       String?                @default("70vw")
+  loginWatermarkHeight      String?                @default("70vh")
+  loginWatermarkOpacity     Float                  @default(0.08)
   loginHeadline             String?
   loginPrimaryColor         String?
   loginSecondaryColor       String?
-  footerCredit              String   @default("Powered by CISTECH's Vicit 1.0.1")
-  footerCreditEnabled       Boolean  @default(true)
+  footerCredit              String                 @default("Powered by CISTECH's Vicit 1.0.1")
+  footerCreditEnabled       Boolean                @default(true)
   /// Mobile footer: FLOATING sits above the bottom nav; STATIC is in document flow above nav padding.
   footerCreditMobileMode    FooterCreditMobileMode @default(FLOATING)
   /// Large title on the split login page. Default Defence Headquarters.
-  loginTitle                String?  @default("Defence Headquarters")
+  loginTitle                String?                @default("Defence Headquarters")
   /// When false, an uploaded login logo is kept but not shown above the sign-in form.
-  loginLogoVisible          Boolean  @default(true)
-  contractorMinDurationDays Int      @default(1)
+  loginLogoVisible          Boolean                @default(true)
+  contractorMinDurationDays Int                    @default(1)
   /// Modes of entry accepted on invites and at the gate (PEDESTRIAN, MOTORCYCLE, VEHICLE)
-  allowedEntryModes         String[] @default(["PEDESTRIAN", "MOTORCYCLE", "VEHICLE"])
-  assetVersion              String   @default("1.0.1")
+  allowedEntryModes         String[]               @default(["PEDESTRIAN", "MOTORCYCLE", "VEHICLE"])
+  assetVersion              String                 @default("1.0.1")
   /// Gate pass protocol for every agency and gate (no per-agency override).
-  gatePassProtocol          GatePassProtocol @default(NONE)
+  gatePassProtocol          GatePassProtocol       @default(NONE)
   /// v25: when false, Super Admins / Super Admin II cannot create new invites (old ones stay visible)
-  superAdminCanInvite       Boolean  @default(true)
+  superAdminCanInvite       Boolean                @default(true)
   /// v25: profile header templates (dashboard greeting, host profile card, my profile header). Null = defaults.
   profileTemplates          Json?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @updatedAt
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
 }
 
 /// Temporary contractor / vendor pass. No login. Long-tail URL is staff-only.
 model Contractor {
-  id             String       @id @default(uuid())
-  token          String       @unique
-  qrToken        String       @unique
-  fullName       String
-  company        String?
-  phone          String?
-  email          String?
-  photoPath      String?
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id])
-  validFrom      DateTime
-  validThrough   DateTime
+  id               String                   @id @default(uuid())
+  token            String                   @unique
+  qrToken          String                   @unique
+  fullName         String
+  company          String?
+  phone            String?
+  email            String?
+  photoPath        String?
+  organisationId   String
+  organisation     Organisation             @relation(fields: [organisationId], references: [id])
+  validFrom        DateTime
+  validThrough     DateTime
   /// daily | weekly | monthly | quarterly | yearly — used by Auto renew
-  cycle          String       @default("monthly")
-  terminatedAt   DateTime?
+  cycle            String                   @default("monthly")
+  terminatedAt     DateTime?
   terminatedReason String?
-  terminatedById String?
-  createdById    String
-  isActive       Boolean      @default(true)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  visits         ContractorVisit[]
-  agencies       ContractorOrganisation[]
+  terminatedById   String?
+  createdById      String
+  isActive         Boolean                  @default(true)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  visits           ContractorVisit[]
+  agencies         ContractorOrganisation[]
 
   @@index([organisationId, validThrough])
   @@index([email])
@@ -590,20 +549,20 @@ model ContractorOrganisation {
 }
 
 model Dispatch {
-  id              String   @id @default(uuid())
+  id              String                @id @default(uuid())
   courierName     String
   courierPhone    String?
   courierCompany  String?
   photoPath       String?
   /// Additional particulars photos (photoPath remains the first/cover).
-  photoPaths      String[]  @default([])
+  photoPaths      String[]              @default([])
   notes           String?
-  status          String   @default("REGISTERED")
+  status          String                @default("REGISTERED")
   createdById     String
   gateId          String?
-  requireApproval Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  requireApproval Boolean               @default(false)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
   destinations    DispatchDestination[]
   items           DispatchItem[]
 
@@ -620,19 +579,19 @@ model DispatchItem {
 }
 
 model DispatchDestination {
-  id             String       @id @default(uuid())
-  dispatchId     String
-  dispatch       Dispatch     @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id])
-  hostId         String?
-  status         String       @default("PENDING")
-  decidedAt      DateTime?
-  decidedById    String?
-  note           String?
-  acknowledgedAt        DateTime?
-  acknowledgedById      String?
-  acknowledgeComment    String?
+  id                 String       @id @default(uuid())
+  dispatchId         String
+  dispatch           Dispatch     @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  organisationId     String
+  organisation       Organisation @relation(fields: [organisationId], references: [id])
+  hostId             String?
+  status             String       @default("PENDING")
+  decidedAt          DateTime?
+  decidedById        String?
+  note               String?
+  acknowledgedAt     DateTime?
+  acknowledgedById   String?
+  acknowledgeComment String?
 
   @@unique([dispatchId, organisationId])
   @@index([organisationId, status])
@@ -676,30 +635,30 @@ model AgencyCustomField {
 /// A physical tag (option 1) or printed CR80 pass (option 2) handed to one guest at one gate.
 /// Exit at that gate is blocked until the item is RETURNED or LOST, whatever the protocol is now.
 model GatePassItem {
-  id          String    @id @default(uuid())
-  visitorId   String
-  gateId      String
+  id            String    @id @default(uuid())
+  visitorId     String
+  gateId        String
   /// GateVisit (checkpoint event) the item was issued with, when known
-  gateVisitId String?
+  gateVisitId   String?
   /// TAG (plain, not generated by Vicit) or PASS (customised CR80 pass generated by Vicit)
-  kind        String
-  tagNumber   String?
+  kind          String
+  tagNumber     String?
   /// v32: RFID card UID (MIFARE, read by a USB keyboard reader). Unique among ISSUED items (partial index).
-  rfidUid     String?
-  destination String?
+  rfidUid       String?
+  destination   String?
   /// ISSUED | RETURNED | LOST
-  status      String    @default("ISSUED")
-  issuedById  String
-  issuedAt    DateTime  @default(now())
-  lostReason  String?
-  closedById  String?
-  closedAt    DateTime?
-  printCount  Int       @default(0)
+  status        String    @default("ISSUED")
+  issuedById    String
+  issuedAt      DateTime  @default(now())
+  lostReason    String?
+  closedById    String?
+  closedAt      DateTime?
+  printCount    Int       @default(0)
   lastPrintedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  visitor     Visitor   @relation(fields: [visitorId], references: [id], onDelete: Cascade)
-  gate        Gate      @relation(fields: [gateId], references: [id], onDelete: Restrict)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  visitor       Visitor   @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  gate          Gate      @relation(fields: [gateId], references: [id], onDelete: Restrict)
 
   @@index([visitorId, gateId, status])
   @@index([status, gateId])

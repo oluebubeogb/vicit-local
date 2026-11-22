@@ -16,7 +16,6 @@ export function pageLabel(pathname?: string | null): string {
     '/profile': 'Profile',
     '/dashboard': 'Home',
     '/branding': 'Branding',
-    '/ring': 'Call',
     '/locations': 'Locations',
     '/users': 'Users',
   };

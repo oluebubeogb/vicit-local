@@ -164,7 +164,7 @@ function ThemeTextColorField({
 export default function BrandingPage() {
   const { brand, refresh } = useBrand();
   const viewer = getUser();
-  const platformBack = viewer?.role === 'SUPER_ADMIN' || viewer?.role === 'GLOBAL_ADMIN' ? '/platform/tools' : '/admin';
+  const platformBack = viewer?.role === 'SUPER_ADMIN' ? '/platform/tools' : '/admin';
   const brandRef = useRef(brand);
   brandRef.current = brand;
   const [form, setForm] = useState({
@@ -815,7 +815,7 @@ function SignInSettings() {
         </div>
       </Section>
 
-      <Section icon={<UserPlus size={16} />} title="Visitor invites" info="Whether Super Admins and Super Admin II accounts can create new visitor invites. Their existing invites always stay visible." applies={['Super Admin', 'Super Admin II']}>
+      <Section icon={<UserPlus size={16} />} title="Visitor invites" info="Whether Super Admins can create new visitor invites. Their existing invites always stay visible." applies={['Super Admin']}>
         <button
           type="button"
           role="switch"

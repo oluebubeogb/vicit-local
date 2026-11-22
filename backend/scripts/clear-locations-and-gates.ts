@@ -6,7 +6,6 @@
  *   - GateOfficerAssignment rows
  *   - GateVisit rows (GateParticular cascades from GateVisit; GateVisit.gateId is ON DELETE RESTRICT)
  *   - Invite.locationId and Visitor.gateId soft references (no FK, nulled for coherence)
- *   - RingCall.gateId soft references (no FK to Gate; nulled for coherence)
  *
  * SAFETY: refuses to run unless CLEAR_LOCATIONS=YES is set in the environment.
  *
@@ -59,12 +58,8 @@ async function main() {
       where: { gateId: { not: null } },
       data: { gateId: null },
     });
-    const rings = await tx.ringCall.updateMany({
-      where: { gateId: { not: null } },
-      data: { gateId: null },
-    });
 
-    return { visits, assignments, gates, locations, invites, visitors, rings };
+    return { visits, assignments, gates, locations, invites, visitors };
   });
 
   console.log('Done.');
@@ -74,7 +69,6 @@ async function main() {
   console.log(`  Locations deleted:         ${result.locations.count}`);
   console.log(`  Invite.locationId cleared: ${result.invites.count}`);
   console.log(`  Visitor.gateId cleared:    ${result.visitors.count}`);
-  console.log(`  RingCall.gateId cleared:   ${result.rings.count}`);
 }
 
 main()

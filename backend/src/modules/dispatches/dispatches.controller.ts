@@ -17,19 +17,19 @@ export class DispatchesController {
   constructor(private dispatches: DispatchesService) {}
 
   @Get()
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.ADMIN, Role.GLOBAL_GATE, Role.GATE)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.GATE)
   list(@CurrentUser() user: any, @Query('status') status?: string) {
     return this.dispatches.list(user, status);
   }
 
   @Post()
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_GATE, Role.GATE)
+  @Roles(Role.SUPER_ADMIN, Role.GATE)
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.dispatches.create(user, body);
   }
 
   @Post('photo')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_GATE, Role.GATE)
+  @Roles(Role.SUPER_ADMIN, Role.GATE)
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('photo', { limits: { fileSize: 5 * 1024 * 1024 } }))
   upload(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
@@ -38,25 +38,25 @@ export class DispatchesController {
   }
 
   @Get('inbox')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.ADMIN, Role.GLOBAL_GATE, Role.GATE, Role.STAFF)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.GATE, Role.STAFF)
   inbox(@CurrentUser() user: any) {
     return this.dispatches.inbox(user);
   }
 
   @Get('photo/:filename')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.ADMIN, Role.GLOBAL_GATE, Role.GATE, Role.STAFF)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.GATE, Role.STAFF)
   photo(@Param('filename') filename: string, @Res() res: Response) {
     res.sendFile(this.dispatches.getPhotoPath(filename));
   }
 
   @Get(':id')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.ADMIN, Role.GLOBAL_GATE, Role.GATE, Role.STAFF)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.GATE, Role.STAFF)
   one(@Param('id') id: string, @CurrentUser() user: any) {
     return this.dispatches.one(user, id);
   }
 
   @Post(':id/acknowledge')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.ADMIN, Role.GLOBAL_GATE, Role.GATE, Role.STAFF)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.GATE, Role.STAFF)
   acknowledge(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
     return this.dispatches.acknowledge(user, id, body || {});
   }
@@ -68,7 +68,7 @@ export class DispatchesController {
   }
 
   @Post(':id/mark')
-  @Roles(Role.SUPER_ADMIN, Role.GLOBAL_GATE, Role.GATE)
+  @Roles(Role.SUPER_ADMIN, Role.GATE)
   mark(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
     const status = String(body.status || '').toUpperCase();
     if (!['DELIVERED', 'EXITED'].includes(status)) throw new BadRequestException('Mark as delivered or exited');

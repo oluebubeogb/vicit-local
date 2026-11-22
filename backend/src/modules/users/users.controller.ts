@@ -140,7 +140,7 @@ export class UsersController {
   @Get('profile-edits')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   listEdits(@CurrentUser() user: any, @Query('status') status?: string) {
     return this.usersService.listProfileEdits(user, status);
   }
@@ -148,7 +148,7 @@ export class UsersController {
   @Get('approvals/summary')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Pending approvals count + recent approve/reject timeline' })
   approvalsSummary(@CurrentUser() user: any) {
     return this.usersService.approvalsSummary(user);
@@ -165,7 +165,7 @@ export class UsersController {
   @Post('profile-edits/bulk-review')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Bulk approve/decline profile edits' })
   bulkReview(
     @Body() body: { ids: string[]; approve: boolean; note?: string },
@@ -183,7 +183,7 @@ export class UsersController {
   @Post('profile-edits/:id/review')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   reviewEdit(
     @Param('id') id: string,
     @Body() body: { approve: boolean; note?: string },

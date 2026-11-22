@@ -25,7 +25,6 @@ import {
   CalendarPlus,
   ChevronRight,
 } from 'lucide-react';
-import IdentityReview from '@/components/IdentityReview';
 import Link from 'next/link';
 import PageHeader from '@/components/ui/PageHeader';
 import Sheet from '@/components/ui/Sheet';
@@ -36,14 +35,12 @@ import { Empty, Field, Fields, SkeletonList } from '@/components/ui/Bits';
 import PersonLink from '@/components/PersonLink';
 import { fmtDate, fmtDuration, fmtTime, MODE_LABEL, photoUrl, relTime, titleCase } from '@/lib/format';
 import { MODE_ICON } from '@/components/InviteBits';
-import RecentCalls, { useRecentCalls } from '@/components/RecentCalls';
-import { InAppCallButton, PhoneCallLink } from '@/components/CallButtons';
+import { PhoneCallLink } from '@/components/CallButtons';
 
 type Tone = 'brand' | 'emerald' | 'amber' | 'rose' | 'violet';
 const TYPE: Record<string, { label: string; icon: ReactNode; tone: Tone }> = {
   ARRIVAL: { label: 'Visitor arrival', icon: <LogIn size={18} />, tone: 'emerald' },
   HOST_ARRIVAL_CONFIRMATION: { label: 'Host availability required', icon: <BellRing size={18} />, tone: 'amber' },
-  RING: { label: 'In-app call', icon: <BellRing size={18} />, tone: 'amber' },
   EXIT: { label: 'Visitor exit', icon: <LogOut size={18} />, tone: 'brand' },
   ENTRY_DENIED: { label: 'Entry declined', icon: <Ban size={18} />, tone: 'rose' },
   PHOTO_CAPTURED: { label: 'Visitor registered', icon: <Camera size={18} />, tone: 'violet' },
@@ -190,19 +187,7 @@ function Detail({ n, isStaffViewer }: { n: any; isStaffViewer: boolean }) {
   return (
     <div className="space-y-4">
       <p className="text-[15px] leading-relaxed text-slate-700">{n.body}</p>
-      {m.type === 'RING' && m.callId && (
-        <div className="flex flex-row gap-2">
-          <InAppCallButton className="flex-1 !py-2 text-xs" label="Call back" onClick={async () => { try { const call = await api.ringCallback(m.callId); window.dispatchEvent(new CustomEvent('vicit:ring-local', { detail: call })); } catch (e: any) { alert(e.message || 'Could not call back'); } }} />
-          <PhoneCallLink phone={m.phone || v?.phone || inv?.host?.phone || n.context?.from?.phone || n.context?.other?.phone} className="flex-1 !py-2 text-xs" />
-        </div>
-      )}
       {m.type === 'VISIT_REMINDER' && m.inviteId && <ReminderActions inviteId={m.inviteId} expectedAt={m.expectedAt} />}
-      {m.type === 'IDENTITY_CONFIRM' && (
-        <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-3">
-          <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-900"><ShieldCheck size={17} /> Is this your guest?</p>
-          <IdentityReview visitorIds={m.visitorIds} compact />
-        </div>
-      )}
       {(m.type === 'PROFILE_EDIT_PENDING' || m.type === 'INVITE_APPROVAL') && (
         <Link href="/approvals" className="btn-primary w-full"><ClipboardCheck size={16} /> Open approvals</Link>
       )}
@@ -216,7 +201,6 @@ function Detail({ n, isStaffViewer }: { n: any; isStaffViewer: boolean }) {
           </div>}
           {v.hostAvailabilityStatus === 'WAITING' && v.hostWaitUntil && <p className="mt-2 text-[11px] text-slate-500">Your previous wait request ends {new Date(v.hostWaitUntil).toLocaleTimeString()}.</p>}
           <div className="mt-2 flex gap-2">
-            <InAppCallButton className="flex-1 !py-2 text-xs" label="In-app call" onClick={async () => { try { const call = await api.startRing(v.id, 'HOST_TO_GATE'); window.dispatchEvent(new CustomEvent('vicit:ring-local', { detail: call })); } catch (e: any) { alert(e.message || 'Could not start the in-app call'); } }} />
             <PhoneCallLink phone={v.entryBy?.phone} className="!py-2 text-xs" />
           </div>
         </div>
@@ -408,7 +392,7 @@ export default function NotificationsPage() {
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [role, setRole] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
-  const calls = useRecentCalls();
+  const calls: any[] = [];
 
   useEffect(() => {
     setRole(getUser()?.role ?? null);
@@ -498,7 +482,7 @@ export default function NotificationsPage() {
         icon={<Bell size={20} />}
         title="Alerts"
         subtitle={loading ? 'Loading…' : fresh.size ? `${fresh.size} new since your last visit` : 'You are all caught up'}
-        info="Arrivals, exits, approvals and calls. Tap an alert for the full visit story."
+        info="Arrivals, exits and approvals. Tap an alert for the full visit story."
       />
       <div className="animate-in mb-4 segmented" role="tablist" aria-label="Alert sections">
         {(
@@ -506,7 +490,6 @@ export default function NotificationsPage() {
             ['all', 'All'],
             ['gate', 'Gate activity'],
             ['other', 'Requests'],
-            ['calls', 'Calls'],
           ] as const
         ).map(([k, l]) => (
           <button key={k} type="button" role="tab" aria-selected={filter === k} data-active={filter === k} onClick={() => switchTab(k)} className="!px-2 text-xs sm:text-sm">
@@ -515,9 +498,7 @@ export default function NotificationsPage() {
         ))}
       </div>
 
-      {filter === 'calls' ? (
-        <RecentCalls rows={calls} title={false} emptyHint="No calls yet. In-app calls you make or receive appear here." />
-      ) : loading ? (
+      {loading ? (
         <SkeletonList rows={6} h={72} />
       ) : filter === 'all' ? (
         items.length === 0 && !(calls && calls.length) ? (
@@ -534,12 +515,6 @@ export default function NotificationsPage() {
               <section className="animate-in" data-testid="all-requests">
                 {sectionHead(<ClipboardCheck size={13} />, "Requests", requestItems.length, "other")}
                 <ul className="rows stagger">{requestItems.slice(0, ALL_LIMIT).map(renderRow)}</ul>
-              </section>
-            )}
-            {calls && calls.length > 0 && (
-              <section className="animate-in" data-testid="all-calls">
-                {sectionHead(<Phone size={13} />, "Calls", calls.length, "calls")}
-                <RecentCalls rows={calls} limit={ALL_LIMIT} title={false} />
               </section>
             )}
           </div>

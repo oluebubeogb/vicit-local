@@ -18,7 +18,7 @@ import { Role } from '@prisma/client';
 @ApiTags('Gate')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+@Roles(Role.ADMIN, Role.GATE, Role.SUPER_ADMIN)
 @Controller('gate')
 export class GateController {
   constructor(private gateService: GateService, private passes: GatePassService) {}
@@ -99,7 +99,7 @@ export class GateController {
   }
 
   @Patch('host-response/:visitorId')
-  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN, Role.GLOBAL_GATE)
+  @Roles(Role.ADMIN, Role.STAFF, Role.GATE, Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Host confirms availability or asks a visitor to wait' })
   hostResponse(@Param('visitorId') visitorId: string, @Body() body: any, @CurrentUser() user: any) {
     return this.gateService.respondHostAvailability(visitorId, body, user);
@@ -118,10 +118,10 @@ export class GateController {
     return this.gateService.uploadGatePhoto(visitorId, file, user);
   }
 
-  @Post('identity-request')
-  @ApiOperation({ summary: 'Send gate photos to the host to confirm identity' })
-  identityRequest(@Body() body: { visitorIds: string[] }, @CurrentUser() user: any) {
-    return this.gateService.requestIdentityConfirmation(body?.visitorIds || [], user);
+  @Patch('invites/:inviteId/comment')
+  @ApiOperation({ summary: 'Save the gate comment on a visit' })
+  gateComment(@Param('inviteId') inviteId: string, @Body() body: { comment?: string }, @CurrentUser() user: any) {
+    return this.gateService.saveGateComment(inviteId, user, String(body?.comment || ''));
   }
 
   @Post('checkpoint')
@@ -147,7 +147,7 @@ export class GateController {
   @Post('entry')
   @ApiOperation({ summary: 'Record visitor entry' })
   entry(@Body() dto: EntryDto, @CurrentUser() user: any) {
-    if (['GATE', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to record visitor entry');
+    if (['GATE'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to record visitor entry');
     return this.gateService.recordEntry(dto, user);
   }
 
@@ -158,7 +158,6 @@ export class GateController {
     @Body('notes') notes: string,
     @CurrentUser() user: any,
   ) {
-    if (user.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not gate operations');
     return this.gateService.recordExit(visitorId, user, notes);
   }
 
@@ -169,7 +168,7 @@ export class GateController {
     @Body('reason') reason: string,
     @CurrentUser() user: any,
   ) {
-    if (['GATE', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to deny visitor entry');
+    if (['GATE'].includes(user.role)) throw new ForbiddenException('Use the assigned checkpoint workflow to deny visitor entry');
     return this.gateService.denyEntry(visitorId, user, reason);
   }
 }

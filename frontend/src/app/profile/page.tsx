@@ -261,7 +261,7 @@ export default function ProfilePage() {
     setPhotoOpen(false);
   };
   const isError = msg && !(pending || msg.includes('pending') || msg.includes('updated'));
-  const approver = ['ADMIN', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(user?.role);
+  const approver = ['ADMIN', 'SUPER_ADMIN'].includes(user?.role);
 
   return (
     <div className="page">

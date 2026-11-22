@@ -43,7 +43,7 @@ export default function GateVisitsPage() {
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   // v22 gate pass protocol
   const [operator, setOperator] = useState(false);
-  useEffect(() => { setOperator(['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'].includes(String(getUser()?.role))); }, []);
+  useEffect(() => { setOperator(['GATE', 'SUPER_ADMIN', 'ADMIN'].includes(String(getUser()?.role))); }, []);
   const [protocol, setProtocol] = useState<string>('NONE');
   const [selectMode, setSelectMode] = useState(false);
   const [picked, setPicked] = useState<Record<string, boolean>>({});

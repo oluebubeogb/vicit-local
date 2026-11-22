@@ -365,7 +365,7 @@ export class ContractorsService {
   }
 
   async checkIn(actor: any, input: { token?: string; contractorId?: string; destination: string; gateId?: string; notes?: string }) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers can check contractors in');
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers can check contractors in');
     const destination = String(input.destination || '').trim();
     if (!destination) throw new BadRequestException('Enter where the contractor is headed');
     const row = await this.findForScan(input.token || input.contractorId || '');
@@ -399,7 +399,7 @@ export class ContractorsService {
   }
 
   async checkOut(actor: any, input: { token?: string; contractorId?: string; visitId?: string }) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers can check contractors out');
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers can check contractors out');
     const row = await this.findForScan(input.token || input.contractorId || '');
     if (!row || !this.canSeeRow(actor, row)) throw new NotFoundException('Contractor not found');
     const visit = input.visitId

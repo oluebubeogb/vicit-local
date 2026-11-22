@@ -1,6 +1,6 @@
 {
   "name": "vicit-llog-backend",
-  "version": "1.0.1-v32",
+  "version": "1.0.1-v33",
   "description": "Vicit Llog Phase 1 – NestJS API",
   "scripts": {
     "build": "nest build",
@@ -11,8 +11,7 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
     "test:qr": "TS_NODE_TRANSPILE_ONLY=1 TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"jsx\":\"react\"}' ts-node scripts/qr-roundtrip.test.ts",
-    "clear:locations": "ts-node --transpile-only scripts/clear-locations-and-gates.ts",
-    "seed:demo": "node scripts/seed-demo-data.js"
+    "clear:locations": "ts-node --transpile-only scripts/clear-locations-and-gates.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",

@@ -17,7 +17,7 @@ export default function ContractorCardPage() {
   const { token } = useParams<{ token: string }>();
   const { brand } = useBrand();
   const user = getUser();
-  const canManage = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'ADMIN'].includes(String(user?.role));
+  const canManage = ['SUPER_ADMIN', 'ADMIN'].includes(String(user?.role));
   const [row, setRow] = useState<any>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');

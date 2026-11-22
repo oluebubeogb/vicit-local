@@ -197,7 +197,7 @@ function LocationsInner() {
                       )}
                       <select aria-label={`Assign officer to ${g.name}`} title={locked ? 'Shared site: you can assign your own gate officers' : undefined} className="input !w-full !py-1.5 text-xs sm:!w-auto" value="" onChange={async (e) => { const userId = e.target.value; if (!userId) return; try { await api.assignGateOfficer(g.id, userId); await load(true); } catch (err: any) { window.alert(err.message || 'Could not assign that officer'); } }}>
                         <option value="">Assign gate officer…</option>
-                        {officers.filter((o: any) => !(g.assignments || []).some((a: any) => a.user?.id === o.id) && (!locked || o.role === 'GATE')).map((o: any) => <option key={o.id} value={o.id}>{o.fullName}{o.role === 'GLOBAL_GATE' ? ' (Super gate)' : ''}</option>)}
+                        {officers.filter((o: any) => !(g.assignments || []).some((a: any) => a.user?.id === o.id) && (!locked || o.role === 'GATE')).map((o: any) => <option key={o.id} value={o.id}>{o.fullName}</option>)}
                       </select>
                       <div className="w-full space-y-1.5 pl-6">
                         <p className="text-[11px] font-semibold tracking-wide text-slate-600">Gate Officers currently assigned</p>
@@ -207,7 +207,7 @@ function LocationsInner() {
                           <ul className="space-y-1">
                             {(g.assignments || []).map((a: any) => (
                               <li key={a.user?.id || a.id} className="flex items-center gap-2 text-sm text-slate-700" data-testid="assigned-officer">
-                                <span className="min-w-0 flex-1 font-medium">{a.user?.fullName || 'Unknown officer'}{a.user?.role === 'GLOBAL_GATE' ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">Super gate</span> : null}</span>
+                                <span className="min-w-0 flex-1 font-medium">{a.user?.fullName || 'Unknown officer'}</span>
                                 <button
                                   type="button"
                                   title={locked && !(a.user?.role === 'GATE' && a.user?.organisationId === orgId) ? 'Another agency’s officer — managed by the owning agency' : `Remove ${a.user?.fullName || 'officer'} from ${g.name}`}

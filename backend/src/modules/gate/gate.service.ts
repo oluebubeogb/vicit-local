@@ -52,8 +52,9 @@ export class GateService {
 
     const include = {
       visitors: { include: { gateVisits: { include: { gate: { select: { name: true, sequence: true, locationId: true } }, officer: { select: { fullName: true } }, particulars: true }, orderBy: { occurredAt: 'asc' } }, transfers: { orderBy: { createdAt: 'asc' } } } },
-      host: { select: { id: true, fullName: true, email: true, phone: true, portfolio: true } },
+      host: { select: { id: true, fullName: true, email: true, phone: true, portfolio: true, customFields: true } },
       organisation: { select: { id: true, name: true, code: true } },
+      gateCommentBy: { select: { fullName: true } },
     } as const;
 
     let invite: any = null;
@@ -116,13 +117,12 @@ export class GateService {
       }
     }
     if (!invite) throw new NotFoundException('No matching invite found');
-    const globalAccess = actor && ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
-    if (actor?.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
+    const globalAccess = actor && ['SUPER_ADMIN'].includes(actor.role);
 
     const seed = seedVisitorId || scannedVisitorId || invite.visitors[0]?.id;
     const linked = seed ? await linkSameDayVisits(this.prisma, seed) : { visitors: invite.visitors, visitorIds: invite.visitors.map((v: any) => v.id), passToken: null, day: null };
     const appointments = this.groupAppointments(linked.visitors?.length ? linked.visitors : invite.visitors);
-    if (actor && !globalAccess && actor.role !== 'GLOBAL_ADMIN') {
+    if (actor && !globalAccess) {
       const mine = appointments.find((a: any) => a.organisationId === actor.orgId) || (invite.organisationId === actor.orgId ? invite : null);
       if (!mine) throw new NotFoundException('No matching invite found');
       if (mine && mine.inviteId && mine.inviteId !== invite.id) {
@@ -181,7 +181,13 @@ export class GateService {
       purpose: invite.purpose,
       expectedMode: invite.expectedMode,
       // v32: paper request — show the real host; calls/alerts still reach the admin account (host.id).
-      host: invite.hostName ? { ...invite.host, fullName: invite.hostName, phone: invite.hostPhone, portfolio: invite.hostOffice || null, external: true, viaAdmin: invite.host?.fullName || null } : invite.host,
+      // v33: rank (custom field) + name for the "Visiting" card. Paper requests show who typed it in.
+      host: invite.hostName
+        ? { id: invite.host?.id, fullName: invite.hostName, displayName: invite.hostName, phone: invite.hostPhone, portfolio: invite.hostOffice || null, external: true, viaAdmin: withRank(invite.host) || null }
+        : invite.host ? { id: invite.host.id, fullName: invite.host.fullName, displayName: withRank(invite.host), phone: invite.host.phone, portfolio: invite.host.portfolio, email: invite.host.email } : null,
+      gateComment: (invite as any).gateComment || '',
+      gateCommentAt: (invite as any).gateCommentAt || null,
+      gateCommentBy: (invite as any).gateCommentBy?.fullName || null,
       organisation: invite.organisation,
       organisationId: invite.organisationId,
       locationId: invite.locationId,
@@ -242,10 +248,22 @@ export class GateService {
    */
   private async syncPoints(gate: any, visitorId: string, actorId: string) {
     const users = await this.prisma.user.findMany({
-      where: { isActive: true, id: { not: actorId }, OR: [{ role: { in: ['GLOBAL_GATE', 'SUPER_ADMIN'] } }, { organisationId: gate.location.organisationId, role: { in: ['GATE', 'ADMIN'] } }] },
+      where: { isActive: true, id: { not: actorId }, OR: [{ role: { in: ['SUPER_ADMIN'] } }, { organisationId: gate.location.organisationId, role: { in: ['GATE', 'ADMIN'] } }] },
       select: { id: true },
     });
     for (const u of users) if (this.liveHub.isOnline(u.id)) this.liveHub.publish(u.id, { type: 'gate-sync', visitorId, gateId: gate.id, sequence: gate.sequence, locationId: gate.locationId });
+  }
+
+  /** v33: gate comment on the visit (shared by every gate officer on this invite). */
+  async saveGateComment(inviteId: string, actor: any, comment: string) {
+    if (!['GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers or admins can comment');
+    const invite = await this.prisma.invite.findUnique({ where: { id: inviteId } });
+    if (!invite) throw new NotFoundException('Visit not found');
+    if (actor.role !== 'SUPER_ADMIN' && invite.organisationId !== actor.orgId) throw new NotFoundException('Visit not found');
+    const text = String(comment || '').trim().slice(0, 1000);
+    const updated = await this.prisma.invite.update({ where: { id: inviteId }, data: { gateComment: text || null, gateCommentAt: text ? new Date() : null, gateCommentById: text ? actor.id : null } });
+    await this.audit.log({ action: 'GATE_COMMENT_SAVED', entity: 'Invite', entityId: inviteId, userId: actor.id, details: { comment: text } });
+    return { gateComment: updated.gateComment || '', gateCommentAt: updated.gateCommentAt };
   }
 
   /**
@@ -253,7 +271,7 @@ export class GateService {
    * Any tag / pass / RFID card still out stays ISSUED and is flagged on the outstanding list.
    */
   async markExited(visitorId: string, actor: any, body: { note?: string; gateId?: string }) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers or admins can mark a guest exited');
+    if (!['GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) throw new ForbiddenException('Only gate officers or admins can mark a guest exited');
     const visitor = await this.assertGateCanHandle(visitorId, actor);
     if (visitor.status !== VisitStatus.ARRIVED) throw new BadRequestException('Only guests inside can be marked exited');
     const note = String(body?.note || '').trim();
@@ -294,7 +312,7 @@ export class GateService {
     const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
     if (!visitor || visitor.invite.organisationId !== gate.location.organisationId) return false;
     if (visitor.invite.locationId && visitor.invite.locationId !== gate.locationId) return false;
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && gate.location.organisationId !== actor.orgId) return false;
     if (actor.role === 'GATE' && !gate.assignments.some((a: any) => a.userId === actor.id)) return false;
     let direction: 'ENTRY' | 'EXIT';
@@ -336,8 +354,7 @@ export class GateService {
   /** Which of these visitor ids the actor may see (org scope, global roles see all). */
   async visibleVisitorIds(actor: any, ids: string[]) {
     if (!ids.length) return [];
-    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) return [];
-    const global = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     const rows = await this.prisma.visitor.findMany({ where: { id: { in: ids }, ...(global ? {} : { invite: { organisationId: actor.orgId } }) }, select: { id: true } });
     return rows.map((r) => r.id);
   }
@@ -406,8 +423,8 @@ export class GateService {
     });
     return gates.map(({ assignments, ...g }: any) => ({
       ...g,
-      // Only agency gate officers are limited to their assigned checkpoints. Super Gate Officers
-      // (GLOBAL_GATE) are on every checkpoint of every agency, like the Super Admin.
+      // Only gate officers are limited to their assigned checkpoints. Admins
+      // are on every checkpoint, like the Super Admin.
       assigned: !actor || actor.role !== 'GATE' || assignments.some((a: any) => a.userId === actor.id),
     }));
   }
@@ -419,9 +436,8 @@ export class GateService {
   private async assertGateCanHandle(visitorId: string, actor: any) {
     const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: { include: { host: { select: { id: true, fullName: true, email: true } } } } } });
     if (!visitor) throw new NotFoundException('Guest not found');
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && visitor.invite.organisationId !== actor.orgId) throw new NotFoundException('Guest not found');
-    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not checkpoint operations');
     return visitor;
   }
 
@@ -431,73 +447,23 @@ export class GateService {
     if (!/^image\/(jpeg|png|webp)$/.test(file.mimetype || '')) throw new BadRequestException('Photo must be JPEG, PNG or WebP');
     const visitor = await this.assertGateCanHandle(visitorId, actor);
     if (visitor.invite.cancelledAt || visitor.invite.status === 'REVOKED') throw new BadRequestException('This visit was cancelled by the host');
-    if (visitor.photoPath) throw new BadRequestException('This guest already has a photo');
-    if (['DENIED', 'CANCELLED', 'EXITED'].includes(visitor.status)) throw new BadRequestException('This visit is already closed');
-    if (visitor.identityStatus === 'PENDING') throw new BadRequestException('Waiting for the host — retake after they respond');
+    if (visitor.status !== 'INVITED') throw new BadRequestException(visitor.status === 'ARRIVED' ? 'This guest is already inside' : 'This visit is already closed');
     const ext = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg';
     const dir = this.photoDir();
     fs.mkdirSync(dir, { recursive: true });
     const name = `${visitorId}-gate-${uuidv4()}${ext}`;
     fs.writeFileSync(path.join(dir, name), file.buffer);
-    // v32: paper requests (host without an account) — the officer checked the passphrase in person,
-    // so the live photo becomes the guest's photo straight away (nobody to confirm it in the app).
-    const paper = !!visitor.invite.hostName;
+    // v33: the only guest photo is the live one taken here by the officer. It is never sent to the host.
     const updated = await this.prisma.visitor.update({
       where: { id: visitorId },
-      data: paper
-        ? { gatePhotoPath: name, photoPath: name, photoTakenAt: new Date(), identityStatus: 'CONFIRMED', identityReviewedAt: new Date(), identityReviewedById: actor.id }
-        : { gatePhotoPath: name, identityStatus: 'CAPTURED', identityReviewedAt: null, identityReviewedById: null },
+      data: { gatePhotoPath: name, photoPath: name, photoTakenAt: new Date(), identityStatus: 'CONFIRMED', identityReviewedAt: new Date(), identityReviewedById: actor.id },
     });
-    await this.audit.log({ action: 'GATE_GUEST_PHOTO_TAKEN', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { guest: visitor.fullName, paperRequest: paper } });
-    if (paper) await this.hostEvents.visitorEvent(visitorId, { type: 'PHOTO_CAPTURED', title: 'Guest photo taken at the gate', body: `${visitor.fullName} (host ${visitor.invite.hostName}) was photographed at the gate.`, email: 'none' });
+    await this.audit.log({ action: 'GATE_GUEST_PHOTO_TAKEN', entity: 'Visitor', entityId: visitorId, userId: actor.id, details: { guest: visitor.fullName } });
     return { id: updated.id, gatePhotoPath: updated.gatePhotoPath, photoPath: updated.photoPath, identityStatus: updated.identityStatus };
   }
 
-  /** Send the captured photos to the host, who ticks or crosses each guest. */
-  async requestIdentityConfirmation(visitorIds: string[], actor: any) {
-    const ids = Array.from(new Set((visitorIds || []).map(String))).slice(0, 30);
-    if (!ids.length) throw new BadRequestException('Choose at least one guest');
-    const visitors = [] as any[];
-    for (const id of ids) visitors.push(await this.assertGateCanHandle(id, actor));
-    const ready = visitors.filter((v) => v.gatePhotoPath && v.identityStatus === 'CAPTURED' && !v.photoPath);
-    if (!ready.length) throw new BadRequestException('Take a photo of each guest first');
-    const now = new Date();
-    await this.prisma.visitor.updateMany({ where: { id: { in: ready.map((v) => v.id) } }, data: { identityStatus: 'PENDING', identityRequestedAt: now, identityRequestedById: actor.id } });
-    const byHost = new Map<string, any[]>();
-    for (const v of ready) {
-      const k = v.invite.hostId;
-      byHost.set(k, [...(byHost.get(k) || []), v]);
-    }
-    for (const [hostId, list] of byHost) {
-      const host = list[0].invite.host;
-      const names = list.map((v) => v.fullName).join(', ');
-      await this.notifications.create({
-        userId: hostId,
-        title: 'Confirm your guest' + (list.length > 1 ? 's' : ''),
-        body: `The gate photographed ${names}. Tick the people you are expecting.`,
-        meta: { type: 'IDENTITY_CONFIRM', visitorIds: list.map((v) => v.id), inviteId: list[0].inviteId, url: '/identity' },
-        channels: ['in_app'],
-      }).catch(() => {});
-      if (host?.email) {
-        const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
-        await this.mail.sendNotice({
-          to: host.email,
-          organisationId: list[0].invite.organisationId,
-          subject: `Confirm guest identity: ${names}`,
-          eyebrow: 'At the gate',
-          title: `Please confirm ${list.length > 1 ? 'these guests' : 'this guest'}`,
-          paragraphs: [`${names} ${list.length > 1 ? 'are' : 'is'} at the gate for "${list[0].invite.purpose}" without a registered photo. Open the app to confirm each person with a tick, or decline with an X.`],
-          button: base ? { href: `${base}/identity`, label: 'Confirm identity' } : null,
-        }).catch(() => null);
-      }
-    }
-    await this.audit.log({ action: 'GUEST_IDENTITY_REQUESTED', entity: 'Invite', entityId: ready[0].inviteId, userId: actor.id, details: { guests: ready.map((v) => v.fullName) } });
-    return { requested: ready.map((v) => v.id) };
-  }
-
   async listCheckpoints(actor: any) {
-    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('gates.manage')) throw new ForbiddenException('Gate oversight permission is required');
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     const where: any = global ? {} : { location: { organisationId: actor.orgId } };
     // Super Gate Officers are automatically on every checkpoint across agencies (same as Super Admin).
     if (actor.role === 'GATE') where.assignments = { some: { userId: actor.id } };
@@ -505,7 +471,6 @@ export class GateService {
   }
 
   async recordCheckpoint(body: any, actor: any) {
-    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not checkpoint operations');
     const visitorId = String(body.visitorId || '');
     const gateId = String(body.gateId || '');
     const decision = String(body.decision || '').toUpperCase();
@@ -520,7 +485,7 @@ export class GateService {
     if (!gate.admissionsEnabled && decision === 'PASSED') throw new BadRequestException('Admissions are disabled at this checkpoint. Contact the agency administrator.');
     if (gate.particularsCheckEnabled && body.particularsChecked !== true) throw new BadRequestException('Confirm that particulars have been checked at this checkpoint before proceeding.');
     if (decision === 'PASSED' && gate.dailyAdmissionLimit) { const start = new Date(); start.setHours(0,0,0,0); const admittedToday = await this.prisma.gateVisit.count({ where: { gateId, decision: 'PASSED', occurredAt: { gte: start } } }); if (admittedToday >= gate.dailyAdmissionLimit) throw new BadRequestException('This checkpoint has reached its daily admission limit.'); }
-    const global = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Gate not found');
     if (visitor.invite.organisationId !== gate.location.organisationId) throw new BadRequestException('This visitor is not invited to this agency');
     if (visitor.invite.locationId && visitor.invite.locationId !== gate.locationId) throw new BadRequestException('This gate is outside the visitor destination');
@@ -611,10 +576,10 @@ export class GateService {
   }
 
   async requestHostAvailability(visitorId: string, actor: any) {
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only checkpoint officers can request host availability');
+    if (!['GATE', 'SUPER_ADMIN'].includes(actor.role)) throw new ForbiddenException('Only checkpoint officers can request host availability');
     const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: { include: { host: true } } } });
     if (!visitor || visitor.status !== VisitStatus.ARRIVED) throw new NotFoundException('Arrived visitor not found');
-    const platformAdmin = actor.role === 'SUPER_ADMIN' || actor.role === 'GLOBAL_GATE';
+    const platformAdmin = actor.role === 'SUPER_ADMIN';
     const assignments = await this.prisma.gateOfficerAssignment.findMany({ where: { userId: actor.id, gate: { location: { organisationId: visitor.invite.organisationId } } }, select: { gateId: true } });
     if (!platformAdmin && (!assignments.length || (actor.role === 'GATE' && visitor.invite.organisationId !== actor.orgId))) throw new NotFoundException('Visitor not found');
     if (visitor.lastHostPromptAt && Date.now() - visitor.lastHostPromptAt.getTime() < 60000) throw new BadRequestException('Please wait at least one minute before asking the host again');
@@ -626,20 +591,18 @@ export class GateService {
   }
 
   async returnParticular(particularId: string, actor: any) {
-    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not custody operations');
     const item = await this.prisma.gateParticular.findUnique({ where: { id: particularId }, include: { gateVisit: { include: { gate: { include: { location: true, assignments: true } } } } } });
     if (!item) throw new NotFoundException('Particular record not found');
     if (item.kind !== 'WITHHELD') throw new BadRequestException('Only withheld items can be marked as returned');
     if (item.returnedAt) throw new BadRequestException('This item has already been marked as returned');
     const gate = item.gateVisit.gate;
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Particular record not found');
     if (actor.role === 'GATE' && !(await this.assignedAtPoints(gate, actor.id))) throw new ForbiddenException(`This item can only be returned or seized at ${gate.name}`);
     return this.resolveParticular(particularId, actor, { resolution: 'RETURNED' });
   }
 
   async resolveParticular(particularId: string, actor: any, body: { resolution: string; note?: string }) {
-    if (actor.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not custody operations');
     const item = await this.prisma.gateParticular.findUnique({ where: { id: particularId }, include: { gateVisit: { include: { gate: { include: { location: true, assignments: true } } } } } });
     if (!item) throw new NotFoundException('Particular record not found');
     if (item.kind !== 'WITHHELD') throw new BadRequestException('Only withheld items can be resolved');
@@ -649,7 +612,7 @@ export class GateService {
     const note = String(body.note || '').trim();
     if (resolution === 'OTHER' && note.length < 2) throw new BadRequestException('Add a short note when resolving as other');
     const gate = item.gateVisit.gate;
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && gate.location.organisationId !== actor.orgId) throw new NotFoundException('Particular record not found');
     if (actor.role === 'GATE' && !(await this.assignedAtPoints(gate, actor.id))) throw new ForbiddenException(`This item can only be returned or seized at ${gate.name}`);
     const now = new Date();
@@ -680,8 +643,7 @@ export class GateService {
   async checkpointHistory(visitorId: string, actor: any) {
     const visitor = await this.prisma.visitor.findUnique({ where: { id: visitorId }, include: { invite: true } });
     if (!visitor) throw new NotFoundException('Visitor not found');
-    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && visitor.invite.organisationId !== actor.orgId) throw new NotFoundException('Visitor not found');
     return this.prisma.gateVisit.findMany({ where: { visitorId }, include: { gate: { include: { location: true } }, officer: { select: { id: true, fullName: true } }, particulars: { orderBy: { createdAt: 'asc' } } }, orderBy: { occurredAt: 'asc' } });
   }
@@ -785,7 +747,7 @@ export class GateService {
       },
     });
 
-    const globalExit = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const globalExit = ['SUPER_ADMIN'].includes(actor.role);
     if (!visitor || (!globalExit && visitor.invite.organisationId !== actor.orgId)) throw new NotFoundException('Visitor not found');
     if (visitor.status !== VisitStatus.ARRIVED) {
       throw new BadRequestException('Visitor is not currently on premises');
@@ -922,8 +884,7 @@ export class GateService {
   }
 
   async listVisits(actor: any, filter?: string, q?: string) {
-    if (actor.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
-    const globalAccess = ['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const globalAccess = ['SUPER_ADMIN'].includes(actor.role);
     const tomorrow = startOfNextLocalDay();
     const term = String(q || '').trim();
     const digits = term.replace(/\D+/g, '');
@@ -1029,7 +990,7 @@ export class GateService {
    */
   async scanStaffAttendance(staffToken: string, actor?: any) {
     if (!actor) throw new ForbiddenException('Sign in required to record staff attendance');
-    if (!['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) {
+    if (!['GATE', 'SUPER_ADMIN', 'ADMIN'].includes(actor.role)) {
       throw new ForbiddenException('Only gate officers (and Super Admin) can record staff attendance');
     }
     const staff = await this.prisma.user.findFirst({
@@ -1046,7 +1007,7 @@ export class GateService {
     });
     if (!staff) throw new NotFoundException('Staff QR not recognised');
 
-    const global = ['SUPER_ADMIN', 'GLOBAL_GATE'].includes(actor.role);
+    const global = ['SUPER_ADMIN'].includes(actor.role);
     if (!global && actor.role !== 'ADMIN' && staff.organisationId !== actor.orgId) {
       throw new ForbiddenException('This staff member belongs to another agency');
     }
@@ -1239,4 +1200,14 @@ export class GateService {
   }
 
 
+}
+
+/** v33: "Maj. Mark Vence" — the host's rank custom field (any key containing "rank") before the name. */
+function withRank(u: any): string {
+  if (!u) return '';
+  const cf = u.customFields && typeof u.customFields === 'object' ? u.customFields : {};
+  const key = Object.keys(cf).find((k) => /rank/i.test(k));
+  const rank = key ? String(cf[key] ?? '').trim() : '';
+  const name = String(u.fullName || '').trim();
+  return rank && !name.toLowerCase().startsWith(rank.toLowerCase()) ? `${rank} ${name}` : name;
 }

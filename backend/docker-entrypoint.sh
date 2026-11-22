@@ -65,6 +65,15 @@ const p = new PrismaClient();
     },
   });
   console.log('Super Admin ready:', adminEmail, '(password synced from ADMIN_PASSWORD)');
+  if ((await p.location.count({ where: { organisationId: org.id } })) === 0) {
+    const loc = await p.location.create({ data: { name: 'Headquarters', code: 'HQ', organisationId: org.id } });
+    await p.gate.createMany({ data: [
+      { name: 'North Main Gate', code: 'MAIN-N', groupName: 'Main Gate', sequence: 0, locationId: loc.id },
+      { name: 'South Main Gate', code: 'MAIN-S', groupName: 'Main Gate', sequence: 0, locationId: loc.id },
+      { name: 'Agency Gate', code: 'AGENCY', sequence: 1, locationId: loc.id },
+    ] });
+    console.log('Default gates created');
+  }
   await p.$disconnect();
 })().catch(async (e) => {
   console.error('Seed failed:', e);

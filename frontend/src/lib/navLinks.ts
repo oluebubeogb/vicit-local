@@ -48,7 +48,7 @@ export function buildNavLinks(
     { href: '/profile', icon: User, label: 'Profile' },
   ];
 
-  if (role === 'SUPER_ADMIN' || role === 'GLOBAL_ADMIN') {
+  if (role === 'SUPER_ADMIN') {
     const canSeeGlobalVisits = role === 'SUPER_ADMIN' || permissions.includes('visits.view');
     const links: AppNavLink[] = [
       { href: '/platform', icon: LayoutDashboard, label: 'Platform' },
@@ -59,7 +59,7 @@ export function buildNavLinks(
     ];
     return links;
   }
-  if (role === 'GATE' || role === 'GLOBAL_GATE') return gateLinks;
+  if (role === 'GATE') return gateLinks;
   return staffLinks;
 }
 
@@ -80,7 +80,7 @@ const L = {
 
 /** v25: Super Admin branding switch "Allow super admins to invite visitors" (default on). */
 export function canCreateInvites(role?: string | null, superAdminCanInvite?: boolean | null) {
-  if (role === 'SUPER_ADMIN' || role === 'GLOBAL_ADMIN') return superAdminCanInvite !== false;
+  if (role === 'SUPER_ADMIN') return superAdminCanInvite !== false;
   return true;
 }
 type NavOpts = { superAdminCanInvite?: boolean | null };
@@ -96,14 +96,10 @@ function sidebarLinks(role?: string | null, permissions: string[] = []): AppNavL
   if (role === 'SUPER_ADMIN') {
     return [L.platform, L.invite, L.visits, L.alerts, L.gate, L.dispatch, L.contractors, L.attendance, L.profile];
   }
-  if (role === 'GLOBAL_ADMIN') {
-    const visits = permissions.includes('visits.view') ? [L.visits] : [];
-    return [L.platform, L.invite, ...visits, L.alerts, L.dispatch, L.contractors, L.attendance, L.profile];
-  }
   if (role === 'ADMIN') {
     return [L.home, L.invite, L.visitors, L.alerts, L.dispatch, L.contractors, L.attendance, L.profile];
   }
-  if (role === 'GATE' || role === 'GLOBAL_GATE') {
+  if (role === 'GATE') {
     return [L.scan, L.invite, L.visits, L.alerts, L.dispatch, L.contractors, L.profile];
   }
   return buildNavLinks(role, permissions);
@@ -123,20 +119,13 @@ function mobileNav(role?: string | null, permissions: string[] = []): { primary:
       more: [L.invite, L.visits, L.dispatch, L.contractors, L.attendance],
     };
   }
-  if (role === 'GLOBAL_ADMIN') {
-    const visits = permissions.includes('visits.view') ? [L.visits] : [];
-    return {
-      primary: [L.platform, L.gate, L.alerts, L.profile],
-      more: [L.invite, ...visits, L.dispatch, L.contractors, L.attendance],
-    };
-  }
   if (role === 'ADMIN') {
     return {
       primary: [L.home, L.invite, L.alerts, L.profile],
       more: [L.visitors, L.dispatch, L.contractors, L.attendance],
     };
   }
-  if (role === 'GATE' || role === 'GLOBAL_GATE') {
+  if (role === 'GATE') {
     return {
       primary: [L.scan, L.dispatch, L.alerts, L.profile],
       more: [L.invite, L.visits, L.contractors],
@@ -146,8 +135,8 @@ function mobileNav(role?: string | null, permissions: string[] = []): { primary:
 }
 
 export function platformHome(role?: string | null) {
-  if (role === 'SUPER_ADMIN' || role === 'GLOBAL_ADMIN') return '/platform';
-  if (role === 'GATE' || role === 'GLOBAL_GATE') return '/gate';
+  if (role === 'SUPER_ADMIN') return '/platform';
+  if (role === 'GATE') return '/gate';
   if (role === 'ADMIN') return '/dashboard';
   return '/dashboard';
 }

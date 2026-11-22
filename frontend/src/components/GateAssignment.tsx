@@ -45,13 +45,6 @@ const KindIcon = ({ kind, size = 13 }: { kind: 'GATE' | 'CHECKPOINT'; size?: num
 
 /** Compact chips under a person's name in user lists. */
 export function GateChips({ role, assignments, mobileMax = 2, desktopMax = 5 }: { role?: string; assignments?: OfficerAssignment[]; mobileMax?: number; desktopMax?: number }) {
-  if (role === 'GLOBAL_GATE') {
-    return (
-      <span className="mt-1 flex flex-wrap gap-1" data-testid="gate-chips">
-        <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10.5px] font-semibold text-violet-700 ring-1 ring-violet-100"><Globe2 size={11} /> All gates &amp; checkpoints</span>
-      </span>
-    );
-  }
   if (role !== 'GATE') return null;
   const list = assignments || [];
   if (!list.length) return <span className="mt-1 block text-[11px] italic text-slate-400" data-testid="gate-chips-empty">No gate assigned</span>;

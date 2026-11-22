@@ -14,8 +14,8 @@ import { attendanceTimeZone, startOfNextLocalDay } from '../../common/utils/atte
 /** CR80 ID-1 card: 85.6 x 54 mm in PDF points (1 mm = 72 / 25.4 pt). */
 export const CR80_PT = { width: (85.6 * 72) / 25.4, height: (54 * 72) / 25.4 };
 
-const OPERATOR_ROLES = ['GATE', 'GLOBAL_GATE', 'SUPER_ADMIN', 'ADMIN'];
-const GLOBAL_ROLES = ['SUPER_ADMIN', 'GLOBAL_GATE'];
+const OPERATOR_ROLES = ['GATE', 'SUPER_ADMIN', 'ADMIN'];
+const GLOBAL_ROLES = ['SUPER_ADMIN'];
 const PROTOCOLS: GatePassProtocol[] = ['PLAIN_TAGS', 'PRINTED_PASS', 'NONE', 'RFID_TAGS'];
 export const PROTOCOL_LABEL: Record<GatePassProtocol, string> = {
   PLAIN_TAGS: 'Option 1 · Plain tags at each gate',
@@ -103,7 +103,6 @@ export class GatePassService {
 
   /** Same people who may record a checkpoint at this gate may issue / collect its tags and passes. */
   private assertOperator(actor: any, visitor: any, gate: any) {
-    if (actor?.role === 'GLOBAL_ADMIN') throw new ForbiddenException('Super Admin II accounts provide oversight, not gate operations');
     if (!OPERATOR_ROLES.includes(actor?.role)) throw new ForbiddenException('Only gate officers can issue or collect tags and passes');
     const global = GLOBAL_ROLES.includes(actor.role);
     if (!global && visitor.invite.organisationId !== actor.orgId) throw new NotFoundException('Guest not found');
@@ -299,10 +298,9 @@ export class GatePassService {
   }
 
   async outstanding(actor: any, gateId?: string) {
-    if (actor?.role === 'GLOBAL_ADMIN' && !(actor.permissions || []).includes('gates.manage')) throw new ForbiddenException('Gate oversight permission is required');
     const where: any = { status: 'ISSUED' };
     if (gateId) where.gateId = gateId;
-    if (!['SUPER_ADMIN', 'GLOBAL_GATE', 'GLOBAL_ADMIN'].includes(actor.role)) where.gate = { location: { organisationId: actor.orgId } };
+    if (!['SUPER_ADMIN'].includes(actor.role)) where.gate = { location: { organisationId: actor.orgId } };
     if (actor.role === 'GATE') where.gate = { ...(where.gate || {}), assignments: { some: { userId: actor.id } } };
     const rows = await this.prisma.gatePassItem.findMany({
       where,

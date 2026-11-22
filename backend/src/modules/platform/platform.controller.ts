@@ -13,7 +13,7 @@ import { PlatformService } from './platform.service';
 @ApiTags('Platform administration')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+@Roles(Role.SUPER_ADMIN)
 @Controller('platform')
 export class PlatformController {
   constructor(private service: PlatformService) {}
@@ -39,10 +39,4 @@ export class PlatformController {
   @Get('locations') locations(@CurrentUser() user: any) { return this.service.locations(user); }
   @Patch('locations/:id/shared') setLocationShared(@Param('id') id: string, @Body('isShared') isShared: boolean, @CurrentUser() user: any) { return this.service.setLocationShared(user, id, !!isShared); }
   @Get('gates') gates(@CurrentUser() user: any) { return this.service.gates(user); }
-  @Post('gates/:gateId/global-officers/:userId') assignGlobalGate(@Param('gateId') gateId: string, @Param('userId') userId: string, @CurrentUser() user: any) { return this.service.assignGlobalGate(user, gateId, userId); }
-  @Get('administrators') administrators(@CurrentUser() user: any) { return this.service.globalAdmins(user); }
-  @Post('administrators') createAdministrator(@Body() body: any, @CurrentUser() user: any) { return this.service.createGlobalAdmin(user, body); }
-  @Get('global-gate-officers') globalGateOfficers(@CurrentUser() user: any) { return this.service.globalGateOfficers(user); }
-  @Post('global-gate-officers') createGlobalGate(@Body() body: any, @CurrentUser() user: any) { return this.service.createGlobalGate(user, body); }
-  @Patch('administrators/:id/status') setStatus(@Param('id') id: string, @Body('isActive') active: boolean, @CurrentUser() user: any) { return this.service.setUserActive(user, id, !!active); }
 }

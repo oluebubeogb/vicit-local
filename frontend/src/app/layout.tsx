@@ -4,8 +4,8 @@ import AppShell from '@/components/AppShell';
 import BrandProvider from '@/components/BrandProvider';
 import SplashScreen from '@/components/SplashScreen';
 import BackgroundArt from '@/components/BackgroundArt';
+import OfflineBanner from '@/components/OfflineBanner';
 import PushRegister from '@/components/PushRegister';
-import RingOverlay from '@/components/RingOverlay';
 import DocumentTitle from '@/components/DocumentTitle';
 import DispatchNotice from '@/components/DispatchNotice';
 import { APP_VERSION, BRAND_BOOT_SCRIPT } from '@/lib/brand';
@@ -43,10 +43,10 @@ export const metadata: Metadata = {
   formatDetection: { telephone: false },
   icons: {
     icon: [
-      { url: '/icon-192.png?v=1.0.1-v32', sizes: '192x192', type: 'image/png' },
-      { url: '/icon-512.png?v=1.0.1-v32', sizes: '512x512', type: 'image/png' },
+      { url: '/icon-192.png?v=1.0.1-v33', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png?v=1.0.1-v33', sizes: '512x512', type: 'image/png' },
     ],
-    apple: '/apple-touch-icon.png?v=1.0.1-v32',
+    apple: '/apple-touch-icon.png?v=1.0.1-v33',
   },
 };
 
@@ -76,8 +76,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <SplashScreen />
           <AppShell>{children}</AppShell>
           <PushRegister />
+          <OfflineBanner />
           <DocumentTitle />
-          <RingOverlay />
           <DispatchNotice />
         </BrandProvider>
         <script

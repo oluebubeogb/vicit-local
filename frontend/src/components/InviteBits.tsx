@@ -45,15 +45,9 @@ export const MODE_ICON: Record<string, ReactNode> = {
   VEHICLE: <Car size={14} />,
 };
 
-/** Tiny gray 'no phone' marker for guests without an email (no registration link — photographed at the gate). */
-export function NoContactIcon({ size = 12, className = '' }: { size?: number; className?: string }) {
-  return (
-    <Tooltip content="No phone — no email for the invite link, gate takes the photo">
-      <span role="img" aria-label="No phone — no email" className={`inline-flex shrink-0 items-center text-slate-400 ${className}`}>
-        <PhoneOff size={size} />
-      </span>
-    </Tooltip>
-  );
+/** v33: retired — every guest is photographed at the gate. Kept so older imports compile. */
+export function NoContactIcon(_props: { size?: number; className?: string }) {
+  return null;
 }
 
 export const isNoContact = (v: any) => !!v && (v.noContact ?? !v.email);
@@ -289,7 +283,6 @@ function ItemsSummary({ visitors }: { visitors: any[] }) {
 /** Body of the invite detail sheet. */
 export function InviteDetail({ inv, children }: { inv: any; children?: ReactNode }) {
   const st = inviteStatus(inv);
-  const link = typeof window !== 'undefined' && inv.token ? `${window.location.origin}/visitor/${inv.token}` : '';
   const visitors = inv.visitors || [];
   const arrived = visitors.filter((v: any) => v.enteredAt).length;
   const total = Math.max(inv.guestCount || 0, visitors.length, 1);
@@ -303,7 +296,7 @@ export function InviteDetail({ inv, children }: { inv: any; children?: ReactNode
         </div>
         <div>
           <p className="text-lg font-bold text-slate-900">{visitors.length}</p>
-          <p className="text-[11px] uppercase tracking-wider text-slate-400">Registered</p>
+          <p className="text-[11px] uppercase tracking-wider text-slate-400">Guests</p>
         </div>
         <div>
           <p className="text-lg font-bold text-emerald-600">{arrived}</p>
@@ -360,14 +353,6 @@ export function InviteDetail({ inv, children }: { inv: any; children?: ReactNode
             </span>
           </Field>
         )}
-        {link && (st === 'ACTIVE' || st === 'USED') && (
-          <Field icon={<Copy size={14} />} label="Registration link">
-            <span className="flex items-center justify-between gap-2">
-              <span className="truncate text-xs text-slate-500">{link.replace(/^https?:\/\//, '')}</span>
-              <CopyBtn value={link} label="Copy link to share" />
-            </span>
-          </Field>
-        )}
         <Field icon={<CalendarClock size={14} />} label="Created">
           {fmtDate(inv.createdAt)} <span className="text-slate-400">· {relTime(inv.createdAt)}</span>
         </Field>
@@ -391,7 +376,7 @@ export function InviteDetail({ inv, children }: { inv: any; children?: ReactNode
             {(inv.guestNames || []).length ? (
               <>Expected: {(inv.guestNames || []).join(', ')}. Nobody has registered yet.</>
             ) : (
-              'Nobody has registered with this link yet.'
+              'No guests yet.'
             )}
           </div>
         )}
@@ -415,7 +400,7 @@ export function InviteActions({ inv, onChanged }: { inv: any; onChanged?: () => 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const st = inviteStatus(inv);
-  const canManage = !!me && (inv.host?.id === me.id || inv.hostId === me.id || ['ADMIN', 'SUPER_ADMIN', 'GLOBAL_ADMIN'].includes(me.role));
+  const canManage = !!me && (inv.host?.id === me.id || inv.hostId === me.id || ['ADMIN', 'SUPER_ADMIN'].includes(me.role));
   const openGuests = (inv.visitors || []).some((v: any) => v.status === 'INVITED' || v.status === 'ARRIVED');
   if (!canManage || st === 'CANCELLED' || st === 'REVOKED') return null;
   const canPostpone = ['ACTIVE', 'EXPIRED', 'USED'].includes(st) && (inv.visitors || []).some((v: any) => v.status === 'INVITED');

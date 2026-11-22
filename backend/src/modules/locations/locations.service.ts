@@ -22,7 +22,7 @@ export class LocationsService {
   /** Gate officers of this agency plus every Super Gate Officer (assignable anywhere). */
   async officers(orgId: string) {
     return this.prisma.user.findMany({
-      where: { isActive: true, OR: [{ role: 'GATE', organisationId: orgId }, { role: 'GLOBAL_GATE' }] },
+      where: { isActive: true, role: 'GATE', organisationId: orgId },
       select: { id: true, fullName: true, email: true, role: true },
       orderBy: { fullName: 'asc' },
     });
@@ -105,7 +105,7 @@ export class LocationsService {
     const gate = await this.prisma.gate.findFirst({ where: { id: gateId, location: { OR: [{ organisationId: orgId }, { isShared: true }] } } });
     if (!gate) throw new NotFoundException('Gate not found');
     const officer = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!officer || !['GATE', 'GLOBAL_GATE'].includes(officer.role)) throw new NotFoundException('Gate officer not found');
+    if (!officer || !['GATE'].includes(officer.role)) throw new NotFoundException('Gate officer not found');
     if (officer.role === 'GATE' && officer.organisationId !== orgId) throw new NotFoundException('Gate officer not found in this agency');
     const a = await this.prisma.gateOfficerAssignment.upsert({ where: { gateId_userId: { gateId, userId } }, update: {}, create: { gateId, userId } });
     await this.audit.log({ action: 'GATE_OFFICER_ASSIGNED', entity: 'Gate', entityId: gateId, userId: actor?.id, details: { organisationId: orgId, officerId: userId, officerName: officer.fullName, gateName: gate.name } });

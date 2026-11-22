@@ -49,7 +49,7 @@ function parseDrill(q: Record<string, any>): DrillFilter {
 @ApiTags('Analytics')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, RateLimitGuard)
-@Roles(Role.ADMIN, Role.SUPER_ADMIN, Role.GLOBAL_ADMIN)
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
 @Controller('analytics')
 export class AnalyticsController {
   constructor(
@@ -61,14 +61,12 @@ export class AnalyticsController {
   @Get('platform')
   @ApiOperation({ summary: 'Cross-agency analytics grouped by agency for platform oversight' })
   async platformDashboard(@CurrentUser() user: any, @Query('days') days?: string, @Query('from') from?: string, @Query('to') to?: string) {
-    if (user.role === Role.GLOBAL_ADMIN && !(user.permissions || []).includes('visits.view')) throw new ForbiddenException('Cross-agency visitor access is not enabled for your account');
-    if (user.role !== Role.SUPER_ADMIN && user.role !== Role.GLOBAL_ADMIN) throw new ForbiddenException();
     const d = Math.min(366, Math.max(1, days ? parseInt(days, 10) || 30 : 30));
     return this.analytics.platformDashboard(d, from, to);
   }
 
   private canPlatform(user: any) {
-    return user.role === Role.SUPER_ADMIN || (user.role === Role.GLOBAL_ADMIN && (user.permissions || []).includes('visits.view'));
+    return user.role === Role.SUPER_ADMIN;
   }
 
   /** Agency admins are scoped to their org; platform roles may pass organisationId or omit it for all agencies. */
@@ -99,7 +97,7 @@ export class AnalyticsController {
   /** Agency admins: own org. Super Admin: all or one agency. Super Admin II: read-only oversight (needs visits.view). */
   private registerOrg(user: any, organisationId?: string): string | null {
     if (user.role === Role.ADMIN) return user.orgId;
-    if (user.role === Role.SUPER_ADMIN || user.role === Role.GLOBAL_ADMIN) {
+    if (user.role === Role.SUPER_ADMIN) {
       return organisationId && /^[0-9a-f-]{36}$/i.test(organisationId) ? organisationId : null;
     }
     throw new ForbiddenException();
@@ -166,7 +164,7 @@ export class AnalyticsController {
   attendance(@CurrentUser() user: any, @Query('days') days?: string, @Query('from') from?: string, @Query('to') to?: string, @Query('organisationId') organisationId?: string) {
     const d = Math.min(366, Math.max(1, days ? parseInt(days, 10) || 30 : 30));
     if (user.role === Role.ADMIN) return this.analytics.attendanceInsights(user.orgId, d, from, to);
-    if (user.role === Role.SUPER_ADMIN || (user.role === Role.GLOBAL_ADMIN && (user.permissions || []).includes('visits.view'))) {
+    if (user.role === Role.SUPER_ADMIN) {
       return this.analytics.attendanceInsights(organisationId || null, d, from, to);
     }
     throw new ForbiddenException();
@@ -187,7 +185,7 @@ export class AnalyticsController {
     const d = Math.min(366, Math.max(1, days ? parseInt(days, 10) || 30 : 30));
     const opts = { days: d, from, to, staffId, day };
     if (user.role === Role.ADMIN) return this.analytics.attendanceDrill(user.orgId, opts);
-    if (user.role === Role.SUPER_ADMIN || (user.role === Role.GLOBAL_ADMIN && (user.permissions || []).includes('visits.view'))) {
+    if (user.role === Role.SUPER_ADMIN) {
       return this.analytics.attendanceDrill(organisationId || null, opts);
     }
     throw new ForbiddenException();

@@ -1,10 +1,10 @@
 /**
- * v32 standalone install for one agency (e.g. SINGLE_AGENCY_CODE=DHQ or NA).
- * Multi-agency features (Super Admin II, creating agencies, shared sites, the agency switcher
- * on the login page) are switched off and lists are scoped to this agency.
+ * v33: Vicit is a single-agency intranet product. The agency is ORGANIZATION_CODE
+ * (SINGLE_AGENCY_CODE still overrides it if set). Creating agencies, shared sites and the
+ * agency switcher on the login page are off; lists are scoped to this agency.
  */
 export function singleAgencyCode(): string | null {
-  const v = String(process.env.SINGLE_AGENCY_CODE || '').trim().toUpperCase();
+  const v = String(process.env.SINGLE_AGENCY_CODE || process.env.ORGANIZATION_CODE || '').trim().toUpperCase().slice(0, 16);
   return v || null;
 }
 

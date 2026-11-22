@@ -1,6 +1,6 @@
 /** Brand colour engine: turns one hex colour into a 50–950 scale of CSS variables. */
 
-export const APP_VERSION = '1.0.1-v32';
+export const APP_VERSION = '1.0.1-v33';
 
 export type LoginBranding = {
   logoUrl?: string | null;
@@ -223,7 +223,7 @@ export function identityScope() {
     const role = String(user.role || '');
     const org = user.organisationId || (user.organisation && user.organisation.id) || 'unknown';
     if (['ADMIN', 'STAFF', 'GATE'].includes(role)) return 'agency:' + org;
-    if (['SUPER_ADMIN', 'GLOBAL_ADMIN', 'GLOBAL_GATE'].includes(role)) return 'platform:' + org;
+    if (['SUPER_ADMIN'].includes(role)) return 'platform:' + org;
     return 'platform';
   } catch {
     return 'public';
@@ -251,4 +251,4 @@ export function readCachedBrand(scope?: string): PublicBranding | null {
 }
 
 /** Inline script run before paint so cached brand colours apply with no flash of the default logo. */
-export const BRAND_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('vicit_token');var u=JSON.parse(localStorage.getItem('vicit_user')||'null');var role=u&&u.role;var org=u&&(u.organisationId||(u.organisation&&u.organisation.id)||'unknown');var scope=!t||!u?'public':(['ADMIN','STAFF','GATE'].indexOf(role)>=0?'agency:'+org:(['SUPER_ADMIN','GLOBAL_ADMIN','GLOBAL_GATE'].indexOf(role)>=0?'platform:'+org:'platform'));var key=scope==='public'?'${LOGIN_BRAND_CACHE_KEY}':'${BRAND_CACHE_KEY}';var b=JSON.parse(localStorage.getItem(key)||'null');if(!b||!b.vars)return;if(scope!=='public'&&b.scope!==scope)return;var r=document.documentElement;for(var k in b.vars){r.style.setProperty(k,b.vars[k]);}r.setAttribute('data-brand-ready','1');}catch(e){}})();`;
+export const BRAND_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('vicit_token');var u=JSON.parse(localStorage.getItem('vicit_user')||'null');var role=u&&u.role;var org=u&&(u.organisationId||(u.organisation&&u.organisation.id)||'unknown');var scope=!t||!u?'public':(['ADMIN','STAFF','GATE'].indexOf(role)>=0?'agency:'+org:(['SUPER_ADMIN'].indexOf(role)>=0?'platform:'+org:'platform'));var key=scope==='public'?'${LOGIN_BRAND_CACHE_KEY}':'${BRAND_CACHE_KEY}';var b=JSON.parse(localStorage.getItem(key)||'null');if(!b||!b.vars)return;if(scope!=='public'&&b.scope!==scope)return;var r=document.documentElement;for(var k in b.vars){r.style.setProperty(k,b.vars[k]);}r.setAttribute('data-brand-ready','1');}catch(e){}})();`;
